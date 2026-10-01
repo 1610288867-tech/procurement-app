@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# ---- 环境变量：绝不进 Git ----
+.env
+.env.local
+
+# ---- 附件目录（M7 起用）----
+backend/uploads/
+
+# ---- 前端 ----
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- 注意 ----
+# 数据库数据不在这里：它在 D:\develop\procurement\data\postgres，
+# 与代码仓库解耦（容器是容器，代码是代码）。

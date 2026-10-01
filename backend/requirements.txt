@@ -1,0 +1,51 @@
+# 后端依赖
+#
+# 策略：**核心稳定，边界收紧**。
+#   - web / 校验 / 迁移类库用兼容范围，允许打补丁
+#   - **SQLAlchemy 钉在 2.0.x**：原项目用 2.0.52，而《领域设计》附录 A.4 的
+#     预算写法是按 2.0 系列实测过的。2.1 是大版本，不要让学习项目踩大版本差异。
+#
+# 安装（三条命令，缺一条就会踩坑）：
+#   python -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+#   py -3.12 -m venv .venv
+#   .\.venv\Scripts\Activate.ps1
+#   $env:PYTHONUTF8 = "1"                                        # ← 见下方说明 1
+#   python -m pip install -r requirements.txt --only-binary=:all:  # ← 见下方说明 2
+#
+# 说明 1（本机实测）：这个文件带中文注释，而 pip 在 Windows 上默认用 GBK 读 requirements 文件，
+#   会直接报 `UnicodeDecodeError: 'gbk' codec can't decode byte ...`。
+#   设 PYTHONUTF8=1 即可。介意的话可以把下面的注释全删掉。
+#
+# 说明 2（本机实测）：`--only-binary=:all:` 强制只用预编译 wheel。
+#   不加它，pip 可能尝试源码编译（要 C/Rust 工具链）并**挂起 30 分钟以上**。
+#
+# ⚠️ **不要装 `uvicorn[standard]`**
+#   它在 Windows 上会尝试源码编译 httptools / uvloop / watchfiles（uvloop 在 Windows
+#   上根本没有 wheel），实测让 pip 卡死超过 25 分钟且一个包都没装上。
+#   纯 `uvicorn` 完全够本地开发用。想要 `--reload` 的快速重载，单独装：
+#       pip install watchfiles --only-binary=:all:
+
+# ---- Web ----
+fastapi>=0.115,<1.0
+uvicorn>=0.34,<1.0
+
+# ---- 数据 ----
+SQLAlchemy[asyncio]>=2.0.36,<2.1
+asyncpg>=0.30,<1.0
+alembic>=1.14,<2.0
+
+# ---- 校验与配置 ----
+pydantic>=2.10,<3.0
+pydantic-settings>=2.7,<3.0
+
+# ---- 测试 ----
+pytest>=8.3,<10.0
+pytest-asyncio>=1.0,<2.0
+httpx>=0.28,<1.0
+
+# ---- 后续阶段按需追加 ----
+# M3 账号权限：argon2-cffi>=23.1   PyJWT>=2.10
+# M7 文件上传：python-multipart>=0.0.20
+# M7 图片校验：Pillow>=11.0          （压缩炸弹防护要真的解码一次）
+# M9 AI 直连：  （httpx 已在上面，不再引 langchain）
+# 质量工具：    ruff>=0.9   mypy>=1.14

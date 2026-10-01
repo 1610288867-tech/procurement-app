@@ -1,0 +1,15 @@
+# 薄封装：把基础设施的 compose 借到这里用。
+#
+# 真正的基础设施定义在 D:\develop\procurement\docker-compose.yml —— 代码与容器故意分开：
+# 容器是容器，代码是代码。数据库坏了不影响代码，代码重写也不用动容器。
+#
+# 用法（在 procurement-app 目录下，效果与去 D:\develop\procurement 执行完全一样）：
+#   docker compose up -d
+#   docker compose ps
+#   docker compose exec db psql -U app -d procurement -c "select version();"
+#   docker compose stop
+#
+# 需要 include 支持 Compose v2.20+（本机 v5.5.1，满足）。
+
+include:
+  - path: D:/develop/procurement/docker-compose.yml

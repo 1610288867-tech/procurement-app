@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Tailwind v4 的接入方式：这里一行 import 就够，不需要 tailwind.config.js，
+   也不需要 postcss.config.js（用的是 @tailwindcss/vite 插件）。
+   本机 Node 24 装到的就是 v4，所以没有 `npx tailwindcss init -p` 那一步。 */
+
+:root {
+  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+}

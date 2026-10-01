@@ -1,0 +1,33 @@
+[project]
+name = "procurement-backend"
+version = "0.1.0"
+description = "企业采购审批系统 —— 后端（个人学习项目）"
+requires-python = ">=3.12"
+
+# 依赖用 requirements.txt 管（pip freeze 的结果），这里只放工具配置。
+# 保持单一事实来源：装了新包就 `pip freeze > requirements.txt`。
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "unit: 纯函数测试，不连数据库（默认档，毫秒级）",
+    "integration: 需要 PostgreSQL 与迁移的测试",
+]
+# 默认只跑毫秒级的纯函数测试，于是 `pytest` 这个最常敲的命令永远秒回。
+# 跑全量：pytest -m ""   只跑集成：pytest -m integration
+addopts = "-m unit"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # 行长交给 formatter
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
