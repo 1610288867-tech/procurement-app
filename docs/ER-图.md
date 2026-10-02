@@ -1,7 +1,7 @@
 # ER 图与数据模型（第一版 15 张表）
 
 > M0 产物之一。领域设计第六节共 22 张表，**第一版只画/只建 15 张**：
-> 砍掉知识库那 5 张（M9 才用）和 `budget_transactions`（M6 才用）。
+> 砍掉知识库那 5 张（M10 才用）和 `budget_transactions`（M7 才用）。
 >
 > 画图工具用 draw.io 或纸笔都行，**关键是画清楚下面第三节那三条关系链**。
 
@@ -15,21 +15,21 @@
 | M2 | `budgets` | 预算（部门 × 年度 × 品类，三个金额字段都是「分」） |
 | M3 | `users` | 账号（含 `token_version`，冻结时 +1 让旧 token 失效） |
 | M3 | `user_roles` | 用户 ↔ 角色（多对多，一个用户可多角色） |
-| M4 | `purchase_requests` | 采购申请主单 |
-| M4 | `purchase_items` | 申请明细行 |
-| M4 | `request_events` | **只追加**的事件流（时间线直接读它） |
-| M4 | `idempotency_records` | 幂等记录（含 `IN_PROGRESS` 占位） |
-| M5 | `approval_flows` | 一次审批实例（含**策略快照**） |
-| M5 | `approval_tasks` | 审批任务（或签/会签） |
-| M7 | `attachments` | 附件（报价单/合同/发票/验收照片） |
-| M8 | `purchase_orders` + `purchase_order_lines` | 采购订单与其明细 |
-| M8 | `quotations` | 供应商报价 |
-| M8 | `goods_receipts` + `goods_receipt_lines` | 收货单与其明细 |
-| M8 | `invoices` / `payments` | 发票 / 付款单 |
+| M5 | `purchase_requests` | 采购申请主单 |
+| M5 | `purchase_items` | 申请明细行 |
+| M5 | `request_events` | **只追加**的事件流（时间线直接读它） |
+| M5 | `idempotency_records` | 幂等记录（含 `IN_PROGRESS` 占位） |
+| M6 | `approval_flows` | 一次审批实例（含**策略快照**） |
+| M6 | `approval_tasks` | 审批任务（或签/会签） |
+| M8 | `attachments` | 附件（报价单/合同/发票/验收照片） |
+| M9 | `purchase_orders` + `purchase_order_lines` | 采购订单与其明细 |
+| M9 | `quotations` | 供应商报价 |
+| M9 | `goods_receipts` + `goods_receipt_lines` | 收货单与其明细 |
+| M9 | `invoices` / `payments` | 发票 / 付款单 |
 | M3+ | `audit_logs` | 审计，**只追加** |
 
 > 表数量按"逻辑表"算是 15 组（把 `*_lines` 与主表算作一组）。
-> 到 M8 全部建完，加上 M6 的 `budget_transactions` 和 M9 的 5 张知识库表，合计 22 张。
+> 到 M9 全部建完，加上 M7 的 `budget_transactions` 和 M10 的 5 张知识库表，合计 22 张。
 
 ## 二、关键字段与取值（写迁移时的依据）
 
@@ -91,7 +91,7 @@ approval_tasks   id, flow_id, request_id, step_order, role, mode(SINGLE/ALL), st
   专为"待办一次 JOIN 查完"服务——**待办是全系统最频繁的查询**
 - `approval_tasks.status`：`PENDING / APPROVED / REJECTED / SKIPPED / CANCELLED / DELEGATED`
 
-### 履约与结算（M8）
+### 履约与结算（M9）
 
 ```
 quotations            id, request_id, supplier_id, amount, currency, valid_until, status, attachment_id
@@ -163,7 +163,7 @@ approval_tasks (request_id)
 request_events (request_id, created_at)
 audit_logs (entity_type, entity_id, created_at)
 idempotency_records UNIQUE (actor_id, scope, key)
-budget_transactions UNIQUE (request_id, kind)  -- M6 起，防重复预留
+budget_transactions UNIQUE (request_id, kind)  -- M7 起，防重复预留
 budgets UNIQUE (department_id, year, category_id)
 suppliers (code)
 ```

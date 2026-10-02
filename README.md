@@ -12,10 +12,10 @@
 
 | 练什么 | 在哪一阶段 |
 | --- | --- |
-| 按金额动态生成审批链（数据驱动，不是硬编码 if/else） | M5 |
-| 预算的并发预留与释放（条件更新，不是先查再写） | M6 |
-| 三单匹配（订单 / 收货 / 发票对账） | M8 |
-| 幂等、乐观锁、事件流、只追加审计 | M4 起贯穿 |
+| 按金额动态生成审批链（数据驱动，不是硬编码 if/else） | M6 |
+| 预算的并发预留与释放（条件更新，不是先查再写） | M7 |
+| 三单匹配（订单 / 收货 / 发票对账） | M9 |
+| 幂等、乐观锁、事件流、只追加审计 | M5 起贯穿 |
 
 ## 仓库组成
 
@@ -33,7 +33,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/企业采购审批系统-实施计划.md](docs/企业采购审批系统-实施计划.md) | M0–M10 十一个阶段的详细步骤、验收、常见坑 |
+| [docs/企业采购审批系统-实施计划.md](docs/企业采购审批系统-实施计划.md) | M0–M11 十二个阶段的详细步骤、验收、常见坑 |
 | [docs/企业采购审批系统-领域设计.md](docs/企业采购审批系统-领域设计.md) | 角色、状态机、审批引擎、22 张表、API、核心模块参考实现 |
 | [docs/新项目搭建方案-Windows优先.md](docs/新项目搭建方案-Windows优先.md) | 平台路线与技术栈选型理由 |
 | [docs/AI--main-项目技术清单.md](docs/AI--main-项目技术清单.md) | 参考项目的技术档案 |
@@ -167,7 +167,7 @@ npm run dev
 
 **前端走 Vite 代理，不用 CORS。** 浏览器请求 `/api/...` 与 `/health/...` 由 Vite 转发到 8000，
 浏览器看到的始终是同源。好处是：不需要 CORS 配置、不需要 `credentials: "include"`、
-M3 引入 httpOnly Cookie 时前端一行都不用改、M10 打包时也只需要换掉代理的 target。
+M3 引入 httpOnly Cookie 时前端一行都不用改、M11 打包时也只需要换掉代理的 target。
 
 ## 目录结构
 
@@ -202,11 +202,12 @@ procurement-app/
 │   └── src/
 │       ├── api/client.ts       统一 HTTP 客户端（同源，无 BASE）
 │       ├── api/hooks/          TanStack Query hooks（useCatalog.ts / useAuth.ts）
-│       ├── components/         跨页组件（RequireAuth.tsx 路由守卫）
+│       ├── components/         跨页组件（ui.tsx 界面原语 / RequireAuth.tsx 路由守卫）
 │       ├── lib/money.ts        金额换算的唯一入口（元 ⇄ 分）
 │       ├── pages/              页面（Home / Login / SupplierList / admin 三个管理页）
 │       ├── router.tsx          路由表
-│       └── App.tsx             外壳：QueryClient + Router + 布局
+│       ├── index.css           设计令牌（Tailwind v4 @theme，换风格只动这一个文件）
+│       └── App.tsx             外壳：QueryClient + Router + 侧边栏布局
 ├── docs/
 │   ├── ER-图.md                15 张表 + 三条关系约束
 │   ├── 业务规则.md             8 条核心规则
@@ -239,7 +240,7 @@ procurement-app/
 
 ## 阶段与进度
 
-计划共 11 个阶段（M0–M10），约 13–14 周（按每周 10–15 小时估算）。
+计划共 12 个阶段（M0–M11），约 13–14 周（按每周 10–15 小时估算）。
 
 | 阶段 | 主题 | 状态 |
 | --- | --- | --- |
@@ -247,13 +248,14 @@ procurement-app/
 | M1 | 骨架贯通（用「供应商」打通全链路） | ✅ 完成（2026-10-02） |
 | M2 | 主数据（部门 / 品类 / 供应商 / 预算） | ✅ 完成（2026-10-02） |
 | M3 | 账号与权限（多角色 + JWT + 数据级权限） | ✅ 完成（2026-10-02）※ |
-| M4 | 采购申请（草稿 / 明细 / 提交 / 撤回） | ⬜ |
-| **M5** | **审批引擎**（动态多级审批） | ⬜ ★ 核心 |
-| **M6** | **预算并发预留** | ⬜ ★ 核心 |
-| M7 | 附件与时间线 | ⬜ |
-| M8 | 履约链（询价 → 定标 → 订单 → 收货 → 发票 → 付款） | ⬜ |
-| M9 | AI 制度助手 | ⬜ 可不做 |
-| M10 | 桌面壳与移动端 | ⬜ 可不做 |
+| M4 | 前端设计系统（设计令牌 + 侧边栏外壳 + 共享界面原语） | ✅ 完成（2026-10-02） |
+| M5 | 采购申请（草稿 / 明细 / 提交 / 撤回） | ⬜ |
+| **M6** | **审批引擎**（动态多级审批） | ⬜ ★ 核心 |
+| **M7** | **预算并发预留** | ⬜ ★ 核心 |
+| M8 | 附件与时间线 | ⬜ |
+| M9 | 履约链（询价 → 定标 → 订单 → 收货 → 发票 → 付款） | ⬜ |
+| M10 | AI 制度助手 | ⬜ 可不做 |
+| M11 | 桌面壳与移动端 | ⬜ 可不做 |
 
 **每个阶段的验收项见 [PROGRESS.md](PROGRESS.md)，只有全部通过才能进入下一阶段。**
 阶段总结见 [Development progress.md](Development%20progress.md)。
@@ -275,7 +277,7 @@ procurement-app/
 
 完整定义见 [docs/业务规则.md](docs/业务规则.md)。
 
-### 金额 → 审批链（M5 的验收基准）
+### 金额 → 审批链（M6 的验收基准）
 
 | 金额 | 应走的审批级 | 审批任务数 |
 | --- | --- | --- |
@@ -338,10 +340,10 @@ M3 已完成认证与权限；其余业务接口按阶段逐个补齐。
 | `/api/v1/admin/departments`、`/categories`、`/suppliers`、`/budgets` | 主数据写入与配置 | **`ADMIN`** | ✅ M3 |
 | `POST /api/v1/auth/login` | 登录（下发 httpOnly Cookie） | 否 | ✅ M3 |
 | `POST /api/v1/auth/refresh`、`/logout`、`GET /me` | 刷新、登出、当前账号 | 登录 | ✅ M3 |
-| `/api/v1/requests/*` | 采购申请（草稿、明细、提交、撤回、时间线） | 群众 | M4 |
-| `/api/v1/approvals/tasks/*` | 待办、认领、通过、驳回 | 审批角色 | M5 |
-| `/api/v1/sourcing/*`、`/orders/*`、`/receipts/*`、`/payments/*` | 询价、定标、订单、收货、付款 | 按角色 | M8 |
-| `/api/v1/chat/*` | 制度问答（流式） | 登录 | M9 |
+| `/api/v1/requests/*` | 采购申请（草稿、明细、提交、撤回、时间线） | 群众 | M5 |
+| `/api/v1/approvals/tasks/*` | 待办、认领、通过、驳回 | 审批角色 | M6 |
+| `/api/v1/sourcing/*`、`/orders/*`、`/receipts/*`、`/payments/*` | 询价、定标、订单、收货、付款 | 按角色 | M9 |
+| `/api/v1/chat/*` | 制度问答（流式） | 登录 | M10 |
 
 认证用 **JWT 双令牌放 httpOnly Cookie**（access 15 分钟 / refresh 7 天，
 refresh 的 `Path` 限定到 `/api/v1/auth/refresh`）；登录连续失败 5 次返回 **429**。
@@ -420,8 +422,9 @@ Select-String -Path backend\app\infrastructure\repositories\*.py -Pattern "\.com
 | 前端 `localhost:5173` | ✅ HTTP 200，Vite 6.4.3 |
 | Vite 代理 → 后端 | ✅ `/health/ready` 经 5173 返回 `database: up` |
 | `pytest`（M3 收尾） | ✅ 88 passed（unit 50 + integration 38） |
-| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 234.71 KB（gzip 73.86） |
-| `node scripts\浏览器自检.mjs`（无窗口 Edge + CDP） | ✅ 11 项全过 |
+| `pytest`（M4 收尾） | ✅ **91 passed**（unit 50 + integration 41，含 CHECK 约束与资质过期过滤的新用例） |
+| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 234.44 KB（gzip 74.81） |
+| `node scripts\浏览器自检.mjs`（无窗口 Edge + CDP） | ✅ 11 项全过（含"侧边栏角色与 `/auth/me` 一致"） |
 | `ruff` / `mypy` | ✅ All checks passed / 29 files, no issues |
 | 三条分层自查 | ✅ 全部无输出 |
 
@@ -457,7 +460,7 @@ docker compose stop        # 停止但保留数据
 | Docker Desktop 未设开机自启（**刻意**） | 每次开工要手动启动引擎；引擎起来后容器会自动重启 |
 | `docker-compose.yml` 依赖目录布局 | `include:` 用相对路径 `../develop/procurement/`，要求代码仓库与基础设施目录同级；否则需改一行 |
 | 受限沙箱会话访问不了 Docker 命名管道 | 属环境限制，非故障；本机终端正常 |
-| M9 / M10 可永久不做 | AI 助手与桌面壳都是加分项，不影响主干学习目标 |
+| M10 / M11 可永久不做 | AI 助手与桌面壳都是加分项，不影响主干学习目标 |
 
 ## 参考项目
 

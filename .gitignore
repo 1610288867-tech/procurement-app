@@ -30,6 +30,17 @@ dist-ssr/
 *.local
 .vite/
 
+# ---- 编辑器"原子写"留下的临时目录 ----
+# 保存文件时先写 `<名字>.<pid>.<uuid>.tmpdir/<名字>.tmp` 再改名，正常会自己清掉。
+# 但 Vite 的文件监听器可能正好去 watch 这个瞬时文件，Windows 上抛 EBUSY 并
+# **让整个 dev server 退出**（已在 vite.config.ts 的 server.watch.ignored 里排掉）。
+# 这里再兜一层，避免误提交。
+.*.tmpdir/
+*.tmp
+
+# ---- 浏览器实测截图（工具生成，不是交付物）----
+browser-screenshots/
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/

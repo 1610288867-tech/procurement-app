@@ -58,10 +58,25 @@
   --radius-sm: 4px;
   --radius-md: 6px;
 
-  /* ---- 字体：参考站用 inter，本机通常没装，退化到系统字体栈 ----
-     中文必须显式带上"Microsoft YaHei"，否则 Windows 上会退化到宋体。 */
-  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", "Microsoft YaHei",
-    sans-serif;
+  /* ---- 字体：中文界面在 Windows 上的正确写法 ----
+     本机实测装有的是：Segoe UI Variable / Segoe UI（西文）、
+     Microsoft YaHei UI / Microsoft YaHei（中文）、DengXian、SimHei。
+     **没有 Inter**。
+
+     两个必须避开的坑：
+       1. 不要把 `system-ui` 放在前面 —— 它在 Windows 上解析成 Segoe UI Variable，
+          而**它没有中文字形**，于是每个汉字都要走浏览器回退：中英文字形来自
+          两套字体，大小与灰度都对不齐，这正是"字体不好看"的主因。
+          显式写 Segoe UI Variable 的前提是**中文字体紧跟其后**，回退才有确定性。
+       2. 不要写 `Inter` 当首位 —— 本机没装，写了等于没写（页面里看不到区别，
+          只会让人以为换过字体了）。
+
+     顺序即优先级：西文先取 Segoe UI Variable（Win11 的 UI 字体，字面更紧凑），
+     它没有的汉字落到 Microsoft YaHei UI（雅黑的界面版，比普通雅黑字距更紧）。
+     末尾留 SimHei 兜底，保证任何 Windows 上都不会掉到宋体。 */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB",
+    "Source Han Sans SC", "Noto Sans CJK SC", "SimHei", sans-serif;
   --font-mono: ui-monospace, "Cascadia Mono", "Consolas", monospace;
 }
 

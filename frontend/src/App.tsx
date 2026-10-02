@@ -58,10 +58,17 @@ function Sidebar() {
       </div>
 
       <nav data-testid="app-nav" className="flex flex-wrap gap-1 md:flex-col">
-        <NavItem to="/" end>
-          环境自检
-        </NavItem>
-        {me.data && <NavItem to="/suppliers">合格供应商</NavItem>}
+        {!me.data && (
+          <p className="px-3 text-sm text-muted">未登录</p>
+        )}
+        {me.data && (
+          <>
+            <NavItem to="/" end>
+              环境自检
+            </NavItem>
+            <NavItem to="/suppliers">合格供应商</NavItem>
+          </>
+        )}
         {isAdmin && (
           <>
             <p className="mt-3 hidden px-3 text-xs tracking-wide text-faint md:block">
