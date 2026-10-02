@@ -53,6 +53,32 @@ class NotFoundError(BusinessError):
         super().__init__(message, status_code=404, code="NOT_FOUND")
 
 
+class UnauthorizedError(BusinessError):
+    """未登录、令牌无效/过期、凭证错误 —— 对应 HTTP 401。
+
+    `code` 区分三种情形，前端靠它决定"跳登录页"还是"提示密码错"：
+        UNAUTHORIZED        没登录 / 令牌失效
+        INVALID_CREDENTIALS 用户名或口令不对
+        TOO_MANY_ATTEMPTS   触发登录限流（429 也用这个 code，但状态码是 429）
+    """
+
+    def __init__(
+        self, message: str = "未登录或登录已过期", *, code: str = "UNAUTHORIZED"
+    ) -> None:
+        super().__init__(message, status_code=401, code=code)
+
+
+class TooManyAttemptsError(BusinessError):
+    """登录失败太频繁 —— 对应 HTTP 429。
+
+    为什么是 429 而不是 401：401 的意思是"你给错了凭证"，
+    而这里的意思是"你给得太勤了，再试也没用"。前端据此可以禁用提交按钮。
+    """
+
+    def __init__(self, message: str = "登录失败次数过多，请稍后再试") -> None:
+        super().__init__(message, status_code=429, code="TOO_MANY_ATTEMPTS")
+
+
 class PermissionDeniedError(BusinessError):
     """可见但无权操作 —— 对应 HTTP 403。"""
 

@@ -35,6 +35,9 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
+    // 同源时浏览器本来就会带 Cookie，写出来是为了 M10 前后端分源时不漏掉。
+    // 另外它也是 M3 的 httpOnly Cookie 能生效的前提。
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
     ...init,
   });
@@ -62,6 +65,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 // ------------------------------------------------------------------ 类型
 
 export type HealthReady = { status: string; database: string };
+
+/** 当前登录账号。**没有 password_hash** —— 后端也不该给。 */
+export type Account = {
+  id: string;
+  username: string;
+  full_name: string;
+  department_id: string | null;
+  roles: string[];
+};
 
 export type Supplier = {
   id: string;
@@ -125,6 +137,15 @@ export type Budget = {
 export const api = {
   live: () => request<{ status: string }>("/health/live"),
   ready: () => request<HealthReady>("/health/ready"),
+
+  // 认证（M3）。令牌在 httpOnly Cookie 里，前端**读不到也不算不碰**。
+  me: () => request<Account>("/api/v1/auth/me"),
+  login: (body: { username: string; password: string }) =>
+    request<Account>("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  logout: () => request<void>("/api/v1/auth/logout", { method: "POST" }),
 
   // 公开只读
   listSuppliers: () => request<Supplier[]>("/api/v1/suppliers"),

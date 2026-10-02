@@ -115,3 +115,37 @@ class UnitOfWork(Protocol):
     async def commit(self) -> None: ...
 
     async def rollback(self) -> None: ...
+
+
+class UserView(Protocol):
+    """账号记录在结构上满足它。**注意有 password_hash** ——
+    这一层要拿它校验口令，但**绝不能把它传到响应模型里**。"""
+
+    id: Any
+    username: str
+    password_hash: str
+    full_name: str
+    department_id: Any
+    active: bool
+    token_version: int
+
+
+class UserRepositoryPort(Protocol):
+    async def find_by_username(self, username: str) -> UserView | None: ...
+
+    async def find_by_id(self, user_id: Any) -> UserView | None: ...
+
+    async def roles_of(self, user_id: Any) -> Sequence[str]: ...
+
+    async def create_user(
+        self,
+        *,
+        username: str,
+        password_hash: str,
+        full_name: str,
+        department_id: Any | None = None,
+    ) -> UserView: ...
+
+    async def add_role(self, *, user_id: Any, role: str) -> None: ...
+
+    async def freeze(self, user_id: Any) -> bool: ...

@@ -21,8 +21,9 @@ class Settings(BaseSettings):
     # PostgreSQL（容器见 D:\develop\procurement\docker-compose.yml）
     database_url: str = "postgresql+asyncpg://app:devpassword@localhost:5432/procurement"
 
-    # M3 起用；本地开发默认值不要用于任何真实环境
-    jwt_secret: str = "dev-only-change-me"
+    # M3 起用。本地开发默认值不要用于任何真实环境；
+    # 长度不短于 32 字节（HS256 的密钥短了 PyJWT 会警告）。
+    jwt_secret: str = "dev-only-change-me-before-any-real-use"
 
     # M7 起用：附件落盘目录
     upload_dir: str = "uploads"

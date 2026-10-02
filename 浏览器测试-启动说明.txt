@@ -28,7 +28,7 @@
 
   · 幂等，反复跑安全，已存在的会跳过
   · 会建：4 个部门（含一个子部门）、2 个采购品类（5 级和 2 级审批）、
-    2 个供应商、1 条 10 万元预算
+    2 个供应商、1 条 10 万元预算，以及 7 个演示账号（8 个角色，GM 由 admin 兼任）
   · 全新数据库上建议跑一次，否则页面上都是空的
 
 
@@ -50,13 +50,31 @@
 
     http://localhost:5173
 
+  先登录（M3 起业务页要求登录，管理员页要求 ADMIN）：
+
+    用户名      admin
+    口令        Dev-Passw0rd!        ← 仅本地演示数据
+
+  其它演示账号（口令同上）：
+
+    requester     REQUESTER     申请人
+    dept-manager  DEPT_MANAGER  部门主管
+    dept-head     DEPT_HEAD     部门负责人
+    procurement   PROCUREMENT   采购专员
+    finance       FINANCE       财务
+    receiver      RECEIVER      收货人
+
+  用非管理员账号（如 requester）打开 /admin/... 会看到「无权限」提示页；
+  这是前端守卫的体验优化，**后端每个接口也会独立校验**（换 Postman 也一样拦）。
+
   页面导航：
 
-    环境自检      http://localhost:5173/
-    合格供应商    http://localhost:5173/suppliers          （只读，不含已停用）
-    采购品类      http://localhost:5173/admin/categories   （含审批规则编辑器）
-    供应商管理    http://localhost:5173/admin/suppliers    （新增 / 停用）
-    预算          http://localhost:5173/admin/budgets
+    登录          http://localhost:5173/login
+    环境自检      http://localhost:5173/                   （公开，不用登录）
+    合格供应商    http://localhost:5173/suppliers          （需登录；只读，不含已停用）
+    采购品类      http://localhost:5173/admin/categories   （需 ADMIN；含审批规则编辑器）
+    供应商管理    http://localhost:5173/admin/suppliers    （需 ADMIN；新增 / 停用）
+    预算          http://localhost:5173/admin/budgets      （需 ADMIN）
 
   接口文档（可选）：http://127.0.0.1:8000/docs
 
@@ -126,6 +144,13 @@
    先停掉占用的进程再跑：
 
         Stop-Process -Id <PID>
+
+
+4) 登录时报「用户名或密码不正确」/「登录失败次数过多」
+
+   先确认第 2 步的 seed 跑过（账号是 seed 建的）。
+   连错 5 次会被锁 5 分钟 —— 这是登录限流，等窗口过去即可，
+   不用重启服务（限流在进程内存里，重启也会清空）。
 
 
 ────────────────────────────────────────────────────────────────

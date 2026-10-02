@@ -1,4 +1,4 @@
-"""演示数据：部门 / 品类 / 供应商 / 预算。
+"""演示数据：部门 / 品类 / 供应商 / 预算 / 账号。
 
 用法（**在 backend 目录下**）：
 
@@ -13,7 +13,8 @@
    也不会覆盖你手工改过的审批策略。
 2. **用同一套 ORM 模型写数据，不手写 SQL**：迁移一改，种子数据跟着改，不会悄悄失效。
 
-M3 起会往这里加账号（8 个角色，GM 由 ADMIN 兼任），M4 加草稿申请。
+M3 已加账号：**8 个角色、7 个人**（`GM` 由 `ADMIN` 兼任）。
+M4 再加草稿申请。
 """
 
 import asyncio
@@ -22,12 +23,14 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from app.database import SessionFactory
+from app.infrastructure.records.auth import UserRecord, UserRoleRecord
 from app.infrastructure.records.catalog import (
     BudgetRecord,
     DepartmentRecord,
     PurchaseCategoryRecord,
     SupplierRecord,
 )
+from app.infrastructure.security import hash_password
 
 # 审批阈值一律「分」。这份策略与 docs/金额-审批链对照表.md 一致：
 # 500 / 5000 / 50000 / 200000 元 → 1 / 2 / 4 / 5 级
@@ -76,6 +79,24 @@ SUPPLIERS = [
     ("SUP-CG-001", "晨光文具（演示）", 365),
     ("SUP-LENOVO-001", "联想华东（演示）", None),
 ]
+
+# 演示口令。**只用于本地合成数据**，任何真实环境都必须换掉。
+DEMO_PASSWORD = "Dev-Passw0rd!"
+
+# (用户名, 姓名, 主角色, 所属部门代码)
+# 8 个角色、7 个人：GM 由 admin 兼任（user_roles 本来就是多对多，不用额外建表）。
+USERS = [
+    ("requester", "张申请", "REQUESTER", "ADM"),
+    ("dept-manager", "李主管", "DEPT_MANAGER", "ADM"),
+    ("dept-head", "王负责人", "DEPT_HEAD", "ADM"),
+    ("procurement", "赵采购", "PROCUREMENT", "PUR"),
+    ("finance", "钱财务", "FINANCE", "FIN"),
+    ("receiver", "孙收货", "RECEIVER", "ADM"),
+    ("admin", "系统管理员", "ADMIN", None),
+]
+
+# 一个用户可持多个角色；这里只有 admin 需要第二个
+EXTRA_ROLES: dict[str, list[str]] = {"admin": ["GM"]}
 
 
 async def seed() -> None:
@@ -176,6 +197,31 @@ async def seed() -> None:
             )
             created.append(f"预算 {year} 行政部 × 办公用品 = 100000.00 元")
 
+        # ---- 账号（口令一律 Argon2id 哈希，库里看不到原文）----
+        for username, full_name, role, department_code in USERS:
+            existing_user = (
+                await session.scalars(
+                    select(UserRecord).where(UserRecord.username == username)
+                )
+            ).one_or_none()
+            if existing_user is not None:
+                skipped.append(f"账号 {username}")
+                continue
+            user = UserRecord(
+                username=username,
+                password_hash=hash_password(DEMO_PASSWORD),
+                full_name=full_name,
+                department_id=(
+                    departments[department_code].id if department_code else None
+                ),
+            )
+            session.add(user)
+            await session.flush()
+            assigned = [role, *EXTRA_ROLES.get(username, [])]
+            for role_name in assigned:
+                session.add(UserRoleRecord(user_id=user.id, role=role_name))
+            created.append(f"账号 {username} {full_name}（{' + '.join(assigned)}）")
+
         await session.commit()
 
     print(f"新建 {len(created)} 项：")
@@ -185,6 +231,7 @@ async def seed() -> None:
         print(f"已存在，跳过 {len(skipped)} 项：")
         for line in skipped:
             print(f"  = {line}")
+    print(f"\n账号口令统一为：{DEMO_PASSWORD}（仅本地演示数据）")
 
 
 if __name__ == "__main__":

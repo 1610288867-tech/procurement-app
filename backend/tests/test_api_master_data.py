@@ -11,7 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import delete
 
 from app.database import SessionFactory
@@ -21,7 +21,6 @@ from app.infrastructure.records.catalog import (
     PurchaseCategoryRecord,
     SupplierRecord,
 )
-from app.main import app
 
 pytestmark = pytest.mark.integration
 
@@ -73,10 +72,13 @@ class Cleanup:
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[AsyncClient]:
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        yield http
+async def client(admin_client: AsyncClient) -> AsyncClient:
+    """已登录**管理员**的客户端（M3 起 `/api/v1/admin/*` 要求 ADMIN）。
+
+    这里沿用 `client` 这个名字，是因为本文件几乎所有请求都打管理员接口；
+    公开只读接口不校验登录，用同一台 client 也照样能调。
+    """
+    return admin_client
 
 
 @pytest.fixture

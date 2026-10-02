@@ -165,15 +165,20 @@ procurement-app/
 │   │   ├── database.py         异步引擎与会话
 │   │   ├── errors.py           统一错误类型与响应体
 │   │   ├── domain/             纯 Python 业务逻辑 —— 禁止 import 任何框架
+│   │   │   ├── rules.py            审批策略的语义校验（M2）
+│   │   │   └── permissions.py      数据级权限：按角色算可见范围（M3）
 │   │   ├── application/        用例编排 —— 事务边界在这一层
 │   │   │   ├── ports.py          端口（Protocol，不 import 框架）
-│   │   │   └── coordinators/     一个用例域一个文件（M1: catalog.py）
+│   │   │   └── coordinators/     一个用例域一个文件（catalog.py / auth.py）
 │   │   ├── boundaries/         HTTP 边界 —— 只解析 / 校验 / 鉴权
-│   │   │   └── http/             一个分组一个文件（catalog.py / admin.py）
+│   │   │   ├── deps.py           当前用户、角色依赖（M3）
+│   │   │   └── http/             一个分组一个文件（auth.py / catalog.py / admin.py）
 │   │   └── infrastructure/     适配器与组合根 —— 一个聚合一个文件
-│   │       ├── records/          ORM 映射（base.py / catalog.py）
-│   │       └── repositories/     数据访问（catalog_repo.py）
-│   ├── migrations/             Alembic（0001 suppliers / 0002 master data）
+│   │       ├── security.py       口令哈希（Argon2id）+ JWT 双令牌（M3）
+│   │       ├── login_throttle.py 登录限流（进程内字典，不引 Redis）
+│   │       ├── records/          ORM 映射（base.py / catalog.py / auth.py）
+│   │       └── repositories/     数据访问（catalog_repo.py / user_repo.py）
+│   ├── migrations/             Alembic（0001 suppliers / 0002 master data / 0003 users）
 │   ├── tests/                  pytest（unit 默认档 / integration 分档）
 │   ├── scripts/seed.py         演示数据（幂等，可反复跑）
 │   ├── pyproject.toml          pytest 分档、ruff、mypy 配置
@@ -181,9 +186,10 @@ procurement-app/
 ├── frontend/
 │   └── src/
 │       ├── api/client.ts       统一 HTTP 客户端（同源，无 BASE）
-│       ├── api/hooks/          TanStack Query hooks（M1: useCatalog.ts）
+│       ├── api/hooks/          TanStack Query hooks（useCatalog.ts / useAuth.ts）
+│       ├── components/         跨页组件（RequireAuth.tsx 路由守卫）
 │       ├── lib/money.ts        金额换算的唯一入口（元 ⇄ 分）
-│       ├── pages/              页面（Home / SupplierList / admin 三个管理页）
+│       ├── pages/              页面（Home / Login / SupplierList / admin 三个管理页）
 │       ├── router.tsx          路由表
 │       └── App.tsx             外壳：QueryClient + Router + 布局
 ├── docs/
@@ -222,7 +228,7 @@ procurement-app/
 | **M0** | 准备与设计定稿 | ✅ 完成（2026-10-01） |
 | M1 | 骨架贯通（用「供应商」打通全链路） | ✅ 完成（2026-10-02） |
 | M2 | 主数据（部门 / 品类 / 供应商 / 预算） | ✅ 完成（2026-10-02） |
-| M3 | 账号与权限（多角色 + JWT） | ⬜ |
+| M3 | 账号与权限（多角色 + JWT + 数据级权限） | ✅ 完成（2026-10-02）※ |
 | M4 | 采购申请（草稿 / 明细 / 提交 / 撤回） | ⬜ |
 | **M5** | **审批引擎**（动态多级审批） | ⬜ ★ 核心 |
 | **M6** | **预算并发预留** | ⬜ ★ 核心 |
@@ -233,6 +239,10 @@ procurement-app/
 
 **每个阶段的验收项见 [PROGRESS.md](PROGRESS.md)，只有全部通过才能进入下一阶段。**
 阶段总结见 [Development progress.md](Development%20progress.md)。
+
+> ※ M3 的 10 条验收里 7 条当场通过；另 3 条（换 id 取别人的申请 → 404、
+> `PROCUREMENT` 跨部门可见性、GM 待办）要等 `purchase_requests` 表建出来才能真跑，
+> 已明确记在 [PROGRESS.md](PROGRESS.md) 里，**没有当作通过**。
 
 ## 业务规则（M0 定稿，8 条）
 
@@ -259,23 +269,64 @@ procurement-app/
 这四行同时是需求、测试用例和验收标准，详见
 [docs/金额-审批链对照表.md](docs/金额-审批链对照表.md)。
 
+## 权限矩阵（M3）
+
+两套权限是**分开**的，缺一不可：
+
+- **能不能用这个接口** → `boundaries/deps.py` 的 `require_roles(...)`，越权返回 **401**（没登录）或 **403**（角色不够）
+- **能看到哪些行** → `domain/permissions.py` 算出的可见范围，**写进 `WHERE`**，查不到就是 **404**
+
+角色可见范围：
+
+| 角色 | 可见范围 | 典型用途 |
+| --- | --- | --- |
+| `REQUESTER` | 只看自己提的申请 | 我的申请、进度、驳回原因 |
+| `DEPT_MANAGER` / `DEPT_HEAD` | 本部门（含子部门） | 待我审批、部门预算 |
+| `PROCUREMENT` / `FINANCE` / `RECEIVER` / `GM` | **跨部门看全公司**（职责要求） | 询价、付款、收货、大额审批 |
+| `ADMIN` | 全部（含配置） | 品类与审批规则、供应商准入、账号 |
+
+接口级权限（当前已生效的部分）：
+
+| 接口组 | 谁能用 |
+| --- | --- |
+| `GET /health/*`、`GET /api/v1/suppliers`、`GET /api/v1/departments`、`GET /api/v1/categories` | 任何人（公开只读） |
+| `POST /api/v1/auth/login` | 任何人 |
+| `POST /api/v1/auth/refresh`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me` | 登录用户 |
+| `/api/v1/admin/*` | 仅 `ADMIN` |
+
+演示账号（`scripts/seed.ps1` 生成，**8 个角色 / 7 个人**，`GM` 由 `ADMIN` 兼任）：
+
+| 用户名 | 角色 | 部门 |
+| --- | --- | --- |
+| `admin` | `ADMIN` + `GM` | — |
+| `requester` | `REQUESTER` | 行政部 |
+| `dept-manager` | `DEPT_MANAGER` | 行政部 |
+| `dept-head` | `DEPT_HEAD` | 行政部 |
+| `procurement` | `PROCUREMENT` | 采购部 |
+| `finance` | `FINANCE` | 财务部 |
+| `receiver` | `RECEIVER` | 行政部 |
+
+口令统一为 `Dev-Passw0rd!`。**仅本地合成数据**，换任何真实环境都必须改掉。
+
 ## 主要 API
 
-M1 已完成供应商接口；其余业务接口按阶段逐个补齐。
+M3 已完成认证与权限；其余业务接口按阶段逐个补齐。
 
 | 分组 | 说明 | 认证 | 状态 |
 | --- | --- | --- | --- |
 | `GET /health/live`、`/health/ready`、`/health/db` | 存活 / 就绪 / 数据库版本 | 否 | ✅ M0 |
 | `GET /api/v1/suppliers` | 合格供应商（只读，不含已停用） | 否 | ✅ M1 |
-| `GET /api/v1/departments`、`/api/v1/categories` | 部门、采购品类 | 否 | ✅ M2 |
-| `/api/v1/admin/departments`、`/categories`、`/suppliers`、`/budgets` | 主数据写入与配置 | 否 → M3 起登录 | ✅ M2 |
-| `/api/v1/departments`、`/api/v1/categories`、`/api/v1/budgets/mine` | 主数据 | 公开 → 按角色 | M2 |
-| `/api/v1/auth/*` | 登录、刷新、登出、当前账号 | 按接口 | M3 |
+| `GET /api/v1/departments`、`/api/v1/categories`、`/api/v1/budgets/mine` | 主数据（只读；`/budgets/mine` 现由调用方带 `department_id`） | 否 | ✅ M2 |
+| `/api/v1/admin/departments`、`/categories`、`/suppliers`、`/budgets` | 主数据写入与配置 | **`ADMIN`** | ✅ M3 |
+| `POST /api/v1/auth/login` | 登录（下发 httpOnly Cookie） | 否 | ✅ M3 |
+| `POST /api/v1/auth/refresh`、`/logout`、`GET /me` | 刷新、登出、当前账号 | 登录 | ✅ M3 |
 | `/api/v1/requests/*` | 采购申请（草稿、明细、提交、撤回、时间线） | 群众 | M4 |
 | `/api/v1/approvals/tasks/*` | 待办、认领、通过、驳回 | 审批角色 | M5 |
 | `/api/v1/sourcing/*`、`/orders/*`、`/receipts/*`、`/payments/*` | 询价、定标、订单、收货、付款 | 按角色 | M8 |
 | `/api/v1/chat/*` | 制度问答（流式） | 登录 | M9 |
 
+认证用 **JWT 双令牌放 httpOnly Cookie**（access 15 分钟 / refresh 7 天，
+refresh 的 `Path` 限定到 `/api/v1/auth/refresh`）；登录连续失败 5 次返回 **429**。
 写操作统一带 `Idempotency-Key`；并发编辑以响应中的 `version` 为准，冲突返回 **409**。
 统一错误体固定为：
 
@@ -323,7 +374,7 @@ Select-String -Path backend\app\infrastructure\repositories\*.py -Pattern "\.com
 
 依次对应：领域层不许依赖框架、**不许有浮点列**、仓库层不许决定事务边界。
 
-### M0 实测结果
+### 实测结果（最近一轮全量）
 
 | 验收项 | 结果 |
 | --- | --- |
@@ -331,9 +382,10 @@ Select-String -Path backend\app\infrastructure\repositories\*.py -Pattern "\.com
 | `GET /health/live` / `/health/ready` / `/health/db` | ✅ 全部通过 |
 | 前端 `localhost:5173` | ✅ HTTP 200，Vite 6.4.3 |
 | Vite 代理 → 后端 | ✅ `/health/ready` 经 5173 返回 `database: up` |
-| `pytest` | ✅ 4 passed |
-| `tsc --noEmit` / `vitest run` | ✅ 无错误 / 8 passed |
-| `ruff` / `mypy` | ✅ 通过 |
+| `pytest`（M3 收尾） | ✅ 88 passed（unit 50 + integration 38） |
+| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 8 passed / 233.93 KB（gzip 73.61） |
+| `ruff` / `mypy` | ✅ All checks passed / 29 files, no issues |
+| 三条分层自查 | ✅ 全部无输出 |
 
 ## 停止与数据
 

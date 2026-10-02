@@ -13,15 +13,13 @@ M2 起**创建/停用走 `/api/v1/admin/suppliers`**，公开的 `/api/v1/suppli
 """
 
 import uuid
-from collections.abc import AsyncIterator
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import delete, select
 
 from app.database import SessionFactory
 from app.infrastructure.records.catalog import SupplierRecord
-from app.main import app
 
 pytestmark = pytest.mark.integration
 
@@ -39,10 +37,13 @@ async def _purge(codes: list[str]) -> None:
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[AsyncClient]:
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        yield http
+async def client(admin_client: AsyncClient) -> AsyncClient:
+    """已登录**管理员**的客户端（M3 起 `/api/v1/admin/*` 要求 ADMIN）。
+
+    本文件既有公开只读用例（不需要登录），也有创建/停用用例（需要 ADMIN），
+    所以统一用管理员客户端。
+    """
+    return admin_client
 
 
 async def test_list_suppliers_returns_list(client: AsyncClient) -> None:

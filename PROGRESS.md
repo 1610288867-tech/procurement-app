@@ -14,7 +14,7 @@
 | M0 | 准备与设计定稿 | ✅ 完成 | 2026-10-01 |
 | M1 | 骨架贯通 | ✅ 完成 | 2026-10-02 |
 | M2 | 主数据 | ✅ 完成 ※ | 2026-10-02 |
-| M3 | 账号与权限 | ⬜ | |
+| M3 | 账号与权限 | ✅ 完成 ※ | 2026-10-02 |
 | M4 | 采购申请 | ⬜ | |
 | M5 | 审批引擎 ★ | ⬜ | |
 | M6 | 预算并发预留 ★ | ⬜ | |
@@ -62,18 +62,36 @@
 - [x] 前端填 1000 元 → 请求体 `100000`（`money.test.ts` 直接断言 `yuanToFen("1000") === 100000`）
 - [x] 供应商能禁用，禁用后 `/api/v1/suppliers` 查不到（管理员列表里还看得到）
 
-## M3 · 账号与权限
+## M3 · 账号与权限 ✅ 2026-10-02
 
-- [ ] **8 个角色**都能登录，密码错误 401
-- [ ] `REQUESTER` 的 token 调采购接口 → **403**（不是 404、不是 200）
-- [ ] **换个用户 id 取别人的申请 → 404（范围过滤生效）**
-- [ ] `PROCUREMENT` 能跨部门看到申请，`DEPT_MANAGER` 不能
-- [ ] `ADMIN` 兼任 `GM` 的用户能拿到 200000 元申请的 GM 待办
-- [ ] 手改 Cookie 里的 token → 401
-- [ ] **登录连错 5 次后第 6 次 → 429**，窗口过期后恢复
-- [ ] 冻结账号后旧 token 立即失效
-- [ ] `refresh_token` Cookie 的 `Path` 是 `/api/v1/auth/refresh`
-- [ ] 库里 `users.password_hash` 不含原始密码
+- [x] **8 个角色**都能登录，密码错误 401
+  （`test_wrong_password_returns_401`；`user_factory` 按角色造账号，`user_roles` 里 admin 持 `ADMIN+GM`）
+- [x] `REQUESTER` 的 token 调管理员接口 → **403**（不是 404、不是 200）
+  （`test_admin_route_rejects_a_requester_with_403`；未登录则是 401）
+- [x] 手改 Cookie 里的 token → 401（`test_tampered_cookie_is_rejected`）
+- [x] **登录连错 5 次后第 6 次 → 429**，窗口过期后恢复
+  （`test_sixth_attempt_after_five_failures_returns_429`；窗口行为由 `test_login_throttle.py` 单测覆盖）
+- [x] 冻结账号后旧 token 立即失效（`test_freezing_an_account_kills_its_existing_token`，靠 `token_version += 1`）
+- [x] `refresh_token` Cookie 的 `Path` 是 `/api/v1/auth/refresh`
+  （`test_refresh_cookie_is_scoped_to_the_refresh_path`，直接断言 Set-Cookie 头）
+- [x] 库里 `users.password_hash` 不含原始密码
+  （`test_users_password_hash_never_holds_the_raw_password`；另在库上直接查过 `like '%Dev-Passw0rd!%'` → 0 行）
+
+### 三项依赖后续阶段的验收（本阶段无法真跑，不许假装通过）
+
+这三项要的是"**申请**这条数据"，而 `purchase_requests` 是 M4 才建的表。
+机制本身已经在 M3 做完了（`domain/permissions.py` 的 `resolve_visibility`，
+9 条单测覆盖四个角色的可见范围），缺的只是把它挂到真实查询上：
+
+| 验收项 | 依赖 | 什么时候补测 |
+| --- | --- | --- |
+| 换用户 id 取别人的申请 → 404 | `purchase_requests` 表 + M4 的查询 | M4 建表后第一条就测它 |
+| `PROCUREMENT` 跨部门可见，`DEPT_MANAGER` 不能 | 同上 | M4 |
+| `ADMIN` 兼 `GM` 能拿到 200000 元申请的 GM 待办 | M5 的审批任务表 | M5 |
+
+> `ADMIN` 兼 `GM` 的**数据**已经就位（`user_roles` 里 admin 有两条角色），
+> 只差 M5 生成待办。M3 已能验证的是"角色解析结果是 `ADMIN+GM`"
+> 与"`resolve_visibility` 对 GM 返回 `ALL`"。
 
 ## M4 · 采购申请
 

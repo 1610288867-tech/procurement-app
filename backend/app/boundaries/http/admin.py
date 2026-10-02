@@ -7,7 +7,8 @@ role 只能是那 5 个之一、order 只能是 0..1000、steps 不能为空。
 在 `application/coordinators/catalog.py` 里调用 `domain/rules.py`。
 第三层（每个步骤可达）在 M5。
 
-⚠️ M2 阶段这些接口**还没有权限校验**，M3 会给每个路由加上角色依赖。
+M3 起这个路由组整体要求 `ADMIN` 角色（见下面的 router 定义）。
+注意这是"**能不能用这个接口**"；"能看到哪些行"是另一套，见 domain/permissions.py。
 """
 
 import uuid
@@ -18,6 +19,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.boundaries.deps import require_roles
 from app.boundaries.http.catalog import (
     BudgetOut,
     CategoryOut,
@@ -26,9 +28,16 @@ from app.boundaries.http.catalog import (
     catalog_coordinator,
 )
 from app.database import get_session
+from app.domain.permissions import ROLE_ADMIN
 from app.errors import BusinessError
 
-router = APIRouter(prefix="/api/v1/admin", tags=["管理员·主数据"])
+# 整组要求管理员：主数据是"配置"，不是日常业务动作。
+# 挂在 router 上而不是逐个路由上 —— 少写 9 次，也就少 9 次漏写的机会。
+router = APIRouter(
+    prefix="/api/v1/admin",
+    tags=["管理员·主数据"],
+    dependencies=[Depends(require_roles(ROLE_ADMIN))],
+)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
