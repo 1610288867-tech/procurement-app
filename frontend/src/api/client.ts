@@ -13,6 +13,10 @@
  *
  * 3. **金额一律整数「分」**。所有 *_fen 字段都是分，界面上的"元"只在
  *    `src/lib/money.ts` 里换算——全项目只有那一个文件碰金额单位。
+ *
+ * 4. **access 令牌过期后静默续期**：access 只有 15 分钟。过期时先打一次
+ *    `/auth/refresh` 换新令牌，再把原请求原样重放一遍 —— 用户感知不到，
+ *    也不会被莫名其妙踢回登录页。**只重放一次**，续期失败就如实抛 401。
  */
 
 const BASE = "";
@@ -33,14 +37,66 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, {
+/** 这三个路径自己不参与"401 → 续期 → 重放"：
+ *  login 的 401 是密码错（不是令牌过期）；
+ *  refresh 的 401 说明刷新令牌也没了，再递归问下去就是死循环；
+ *  logout 无论如何都该成功结束。 */
+const AUTH_PATHS = new Set([
+  "/api/v1/auth/login",
+  "/api/v1/auth/refresh",
+  "/api/v1/auth/logout",
+]);
+
+function send(path: string, init: RequestInit): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
     // 同源时浏览器本来就会带 Cookie，写出来是为了 M10 前后端分源时不漏掉。
     // 另外它也是 M3 的 httpOnly Cookie 能生效的前提。
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
     ...init,
   });
+}
+
+/** 同一时刻只允许有一次续期在飞。
+ *
+ * 页面一打开往往会并发好几个查询，它们会在同一瞬间一起拿到 401；
+ * 不合并的话就会同时打四五次 `/auth/refresh`，既浪费又容易互相踩。
+ */
+let refreshing: Promise<boolean> | null = null;
+
+function refreshAccessToken(): Promise<boolean> {
+  if (!refreshing) {
+    const started = (async () => {
+      try {
+        const response = await fetch(`${BASE}/api/v1/auth/refresh`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+        });
+        return response.ok;
+      } catch {
+        // 后端不可达之类的情况：当作续期失败，让调用方看到原本的 401
+        return false;
+      }
+    })();
+    refreshing = started;
+    // 收尾时把单飞标志清掉，下一次真的过期还能再续一次。
+    // 这里用 doRefresh 自己的 promise，不返回它，避免调用方拿到未处理的拒绝。
+    void started.finally(() => {
+      if (refreshing === started) refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let response = await send(path, init);
+
+  if (response.status === 401 && !AUTH_PATHS.has(path)) {
+    if (await refreshAccessToken()) {
+      response = await send(path, init);
+    }
+  }
 
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody;

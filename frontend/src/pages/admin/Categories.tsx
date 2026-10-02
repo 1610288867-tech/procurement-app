@@ -1,4 +1,4 @@
-/** 采购品类与**审批规则编辑器**。
+/** 采购品类与**审批规则编辑器**（M4 重刷样式）。
  *
  * 编辑器只做"下拉选角色 + 填金额阈值 + 增删行"，由前端拼成策略 JSON ——
  * 第一版刻意不上 JSON 编辑器。
@@ -19,7 +19,17 @@ import {
   useUpdateApprovalPolicy,
 } from "../../api/hooks/useCatalog";
 import { fenToYuan, yuanToFen } from "../../lib/money";
-import { FormError, Section, inputClass } from "./_ui";
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorNote,
+  Field,
+  Input,
+  Loading,
+  PageHeader,
+  Select,
+} from "../../components/ui";
 
 const ROLE_OPTIONS: { value: ApprovalRole; label: string }[] = [
   { value: "DEPT_MANAGER", label: "部门主管" },
@@ -132,49 +142,52 @@ export default function AdminCategories() {
   }
 
   return (
-    <section className="space-y-6">
-      <Section title={editingId ? "修改审批策略" : "新增采购品类"}>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col text-sm text-slate-600">
-              名称
-              <input
+    <>
+      <PageHeader
+        title="采购品类"
+        description="审批层级按金额动态生成，规则存在品类上：改规则不改代码。"
+      />
+
+      <Card title={editingId ? "修改审批策略" : "新增采购品类"}>
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div className="flex flex-wrap items-end gap-4">
+            <Field label="名称">
+              <Input
                 value={name}
                 onChange={(event) => setName(event.target.value)}
                 required
                 maxLength={200}
                 disabled={editingId !== null}
-                className={`${inputClass} disabled:bg-slate-100`}
               />
-            </label>
-            <label className="flex flex-col text-sm text-slate-600">
-              编码
-              <input
+            </Field>
+            <Field label="编码">
+              <Input
+                className="font-mono"
                 value={code}
                 onChange={(event) => setCode(event.target.value)}
                 required
                 maxLength={64}
                 placeholder="CAT-OFFICE"
                 disabled={editingId !== null}
-                className={`${inputClass} font-mono disabled:bg-slate-100`}
               />
-            </label>
+            </Field>
           </div>
 
           <div>
-            <p className="text-sm font-medium text-slate-700">审批规则</p>
-            <p className="mt-1 text-xs text-slate-500">
-              金额单位是「元」，提交时会转成「分」。<strong>第一级必须是 0 元</strong>
+            <p className="text-sm font-medium text-body">审批规则</p>
+            <p className="mt-1 text-xs text-muted">
+              金额单位是「元」，提交时会转成「分」。
+              <strong className="text-warning">第一级必须是 0 元</strong>
               （任何金额都要命中，否则某些金额区间会没有人审）。
             </p>
 
-            <div className="mt-2 space-y-2">
+            <div className="mt-3 space-y-2">
               {rows.map((row, index) => (
                 <div key={index} className="flex items-center gap-2">
-                  <span className="w-6 text-right text-xs text-slate-400">
+                  <span className="w-6 text-right text-xs text-faint">
                     {index + 1}
                   </span>
-                  <select
+                  <Select
                     value={row.role}
                     onChange={(event) =>
                       setRows(
@@ -185,16 +198,16 @@ export default function AdminCategories() {
                         ),
                       )
                     }
-                    className="rounded border border-slate-300 px-2 py-1 text-sm"
                   >
                     {ROLE_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
                     ))}
-                  </select>
-                  <span className="text-sm text-slate-500">金额 ≥</span>
-                  <input
+                  </Select>
+                  <span className="text-sm text-muted">金额 ≥</span>
+                  <Input
+                    className="w-28 text-right"
                     value={row.thresholdYuan}
                     onChange={(event) =>
                       setRows(
@@ -205,14 +218,13 @@ export default function AdminCategories() {
                         ),
                       )
                     }
-                    className="w-28 rounded border border-slate-300 px-2 py-1 text-right text-sm"
                   />
-                  <span className="text-sm text-slate-500">元</span>
+                  <span className="text-sm text-muted">元</span>
                   <button
                     type="button"
                     disabled={rows.length === 1}
                     onClick={() => setRows(rows.filter((_, i) => i !== index))}
-                    className="text-xs text-slate-500 hover:text-red-600 disabled:opacity-30"
+                    className="text-xs text-muted hover:text-danger disabled:opacity-30"
                   >
                     删除
                   </button>
@@ -225,25 +237,21 @@ export default function AdminCategories() {
               onClick={() =>
                 setRows([...rows, { role: "DEPT_HEAD", thresholdYuan: "1000" }])
               }
-              className="mt-2 text-sm text-blue-600 hover:underline"
+              className="mt-3 text-sm text-body hover:underline"
             >
               + 添加一级
             </button>
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              type="submit"
-              disabled={mutation.isPending}
-              className="rounded bg-slate-800 px-4 py-1.5 text-sm text-white disabled:opacity-50"
-            >
+            <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending ? "提交中…" : editingId ? "保存策略" : "新增"}
-            </button>
+            </Button>
             {editingId && (
               <button
                 type="button"
                 onClick={resetForm}
-                className="text-sm text-slate-500 hover:underline"
+                className="text-sm text-muted hover:underline"
               >
                 取消
               </button>
@@ -251,42 +259,47 @@ export default function AdminCategories() {
           </div>
         </form>
 
-        {localError && <p className="mt-3 text-sm text-red-600">{localError}</p>}
-        <FormError error={mutation.error} />
-      </Section>
+        {localError && (
+          <p className="mt-3 whitespace-pre-wrap rounded-sm border border-danger/30 bg-danger-bg px-3 py-2 text-sm text-danger">
+            {localError}
+          </p>
+        )}
+        <ErrorNote error={mutation.error} />
+      </Card>
 
-      <Section title="采购品类">
-        {categories.isPending && <p className="text-slate-500">加载中…</p>}
-        {categories.isError && (
-          <p className="text-red-600">{(categories.error as Error).message}</p>
-        )}
+      <Card title="采购品类">
+        {categories.isPending && <Loading />}
+        <ErrorNote error={categories.error} />
+
         {categories.data && categories.data.length === 0 && (
-          <p className="text-slate-500">还没有品类。</p>
+          <EmptyState>还没有品类。</EmptyState>
         )}
+
         {categories.data && categories.data.length > 0 && (
           <ul className="space-y-3">
             {categories.data.map((category) => (
               <li
                 key={category.id}
-                className="rounded border border-slate-200 p-3 text-sm"
+                className="rounded-sm border border-line bg-white p-4 text-sm"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <span className="font-mono text-slate-700">{category.code}</span>
-                    <span className="mx-2 text-slate-300">|</span>
-                    <span className="text-slate-800">{category.name}</span>
-                    <span className="ml-2 text-xs text-slate-500">
-                      版本 {category.version} · {category.approval_policy.steps.length} 级
+                  <div className="min-w-0">
+                    <span className="font-mono text-muted">{category.code}</span>
+                    <span className="mx-2 text-faint">|</span>
+                    <span className="text-ink">{category.name}</span>
+                    <span className="ml-2 text-xs text-muted">
+                      版本 {category.version} ·{" "}
+                      {category.approval_policy.steps.length} 级
                     </span>
                   </div>
                   <button
                     onClick={() => startEdit(category)}
-                    className="text-sm text-blue-600 hover:underline"
+                    className="shrink-0 text-sm text-body hover:underline"
                   >
                     编辑策略
                   </button>
                 </div>
-                <ol className="mt-2 space-y-0.5 text-xs text-slate-600">
+                <ol className="mt-2 space-y-0.5 text-xs text-muted">
                   {category.approval_policy.steps.map((step) => {
                     const gte = (step.when as { gte?: unknown[] }).gte;
                     const threshold =
@@ -305,7 +318,7 @@ export default function AdminCategories() {
             ))}
           </ul>
         )}
-      </Section>
-    </section>
+      </Card>
+    </>
   );
 }

@@ -12,7 +12,8 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, text
+from sqlalchemy.exc import IntegrityError
 
 from app.database import SessionFactory
 from app.infrastructure.records.catalog import (
@@ -418,3 +419,79 @@ async def test_bad_datetime_is_rejected(client: AsyncClient) -> None:
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "INVALID_DATETIME"
+
+
+# ---------------------------------------------------------------------- 预算
+
+
+async def test_budget_check_constraint_blocks_overdraft(
+    client: AsyncClient, cleanup: Cleanup
+) -> None:
+    """数据库兜底：预留 + 已花 不允许超过总额。
+
+    为什么这条要测到数据库层：M6 的并发预留靠应用层的条件更新挡超支，
+    而"应用层总有一条路径没想到"——漏写守卫时**不会报错，只会把钱算多**。
+    所以要有一层谁都绕不过去的 CHECK。
+
+    做法：用**原始 SQL** 直接插一行"预留额 = 总额 + 1 分"（绕开应用层的所有校验），
+    数据库必须拒绝。全程不 commit，最后显式回滚 —— 验证的是"数据库会拒绝"，
+    而不是"先往库里塞一条脏数据看看"。
+    本用例自己造部门与品类，所以不依赖库里已有的任何数据。
+    """
+    department = await _create_department(client, cleanup)
+    category = await _create_category(client, cleanup, VALID_POLICY)
+
+    async with SessionFactory() as session:
+        params = {
+            "department_id": department["id"],
+            "category_id": category["id"],
+        }
+        try:
+            # ① 预留额撑爆总额
+            with pytest.raises(IntegrityError):
+                await session.execute(
+                    text(
+                        "insert into budgets (id, department_id, category_id, year, "
+                        "amount_total, amount_reserved, amount_spent) values "
+                        "(gen_random_uuid(), :department_id, :category_id, 2101, 1000, 1001, 0)"
+                    ),
+                    params,
+                )
+            await session.rollback()
+
+            # ② 预留为负
+            with pytest.raises(IntegrityError):
+                await session.execute(
+                    text(
+                        "insert into budgets (id, department_id, category_id, year, "
+                        "amount_total, amount_reserved, amount_spent) values "
+                        "(gen_random_uuid(), :department_id, :category_id, 2101, 1000, -1, 0)"
+                    ),
+                    params,
+                )
+            await session.rollback()
+
+            # ③ 预留 + 已花 刚好等于总额 —— 边界上是**允许**的，别把合法值也挡了
+            await session.execute(
+                text(
+                    "insert into budgets (id, department_id, category_id, year, "
+                    "amount_total, amount_reserved, amount_spent) values "
+                    "(gen_random_uuid(), :department_id, :category_id, 2101, 1000, 600, 400)"
+                ),
+                params,
+            )
+        finally:
+            # 这一行不该落库：上面无论成功与否都回滚
+            await session.rollback()
+
+    async with SessionFactory() as session:
+        leftovers = (
+            await session.execute(
+                text(
+                    "select count(*) from budgets "
+                    "where department_id = :department_id and year = 2101"
+                ),
+                params,
+            )
+        ).scalar_one()
+    assert leftovers == 0, "本用例必须回滚干净，不在开发库留下测试预算"

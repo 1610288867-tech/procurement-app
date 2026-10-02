@@ -132,3 +132,51 @@ async def test_inactive_supplier_is_filtered_out(client: AsyncClient) -> None:
         assert any(item["code"] == code for item in all_items)
     finally:
         await _purge([code])
+
+
+async def test_expired_qualification_is_not_selectable(client: AsyncClient) -> None:
+    """业务规则第 4 条：资质过期的供应商**不可选**，但管理员仍能查到。
+
+    "过期即不可选"是靠**查询时过滤**实现的，所以这里必须断言两个方向：
+    公开列表里没有它（选不到），管理列表里还有它（排查得到）。
+    只测前者的话，把供应商整个过滤没了也会"通过"。
+    """
+    code = _code("SUP-EXP")
+    try:
+        created = await client.post(
+            "/api/v1/admin/suppliers",
+            json={
+                "name": "资质已过期供应商",
+                "code": code,
+                "qualification_expires_at": "2020-01-01T00:00:00+08:00",
+            },
+        )
+        assert created.status_code == 201
+
+        public = (await client.get("/api/v1/suppliers")).json()
+        assert not any(item["code"] == code for item in public), "资质过期的供应商不该可选"
+
+        admin = (await client.get("/api/v1/admin/suppliers")).json()
+        assert any(item["code"] == code for item in admin), "管理员列表必须还查得到"
+    finally:
+        await _purge([code])
+
+
+async def test_supplier_without_expiry_stays_selectable(client: AsyncClient) -> None:
+    """没填资质有效期的 = 长期有效，不能被"过期过滤"误伤。
+
+    少了这条用例，把过滤条件写成"必须有未来有效期"也能全绿 ——
+    而那会让所有没填有效期的供应商凭空消失。
+    """
+    code = _code("SUP-NOEXP")
+    try:
+        created = await client.post(
+            "/api/v1/admin/suppliers", json={"name": "长期有效供应商", "code": code}
+        )
+        assert created.status_code == 201
+        assert created.json()["qualification_expires_at"] is None
+
+        public = (await client.get("/api/v1/suppliers")).json()
+        assert any(item["code"] == code for item in public), "没填有效期的应当长期可选"
+    finally:
+        await _purge([code])

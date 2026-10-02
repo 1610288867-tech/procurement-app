@@ -66,6 +66,7 @@ Windows 11 + Docker Desktop（Linux 容器后端）+ Python 3.12 + Node.js ≥ 2
 | PostgreSQL | 16.15 + pgvector 0.8.6 | ✅ 容器 `pgvector/pgvector:pg16` |
 | Python | **3.12**（本机没有 3.13） | ✅ 3.12.2 |
 | Node.js | ≥ 20 | ✅ v24.18.0 |
+| PowerShell | 7（`pwsh`）推荐，**5.1 也能跑** | ✅ 7.6.6 / 5.1.22621 都实测通过。脚本的就绪探测特意写成两个版本通吃（5.1 没有 `-SkipHttpErrorCheck`，早先会假报"未就绪"） |
 
 ### 两个必须知道的坑
 
@@ -123,6 +124,20 @@ uvicorn app.main:app --reload --port 8000
 .\scripts\run-api.ps1                          # 只起后端
 .\scripts\seed.ps1                             # 可选：灌入演示数据（幂等，可反复跑）
 ```
+
+**不想开终端、只想双击？** 仓库自带一层 `.bat` 包装（它只转发给上面这些 `.ps1`，
+启动逻辑仍然只有一份）：
+
+| 双击这个 | 等于 |
+| --- | --- |
+| `启动项目.bat`（仓库根目录） | Docker + 数据库 + 前后端，并打开浏览器 |
+| `scripts\启动-数据库.bat` | `dev-up.ps1` |
+| `scripts\启动-前后端.bat` | `start.ps1` |
+| `scripts\灌演示数据.bat` | `seed.ps1`（幂等） |
+| `scripts\启动-后端.bat` / `启动-前端.bat` | `run-api.ps1` / `run-web.ps1`（单独调试用） |
+
+`.bat` 会优先调用 `pwsh`；万一机器上只有 5.1，它会提示一句然后照样跑。
+失败时窗口会停住不关，好让你把报错看完。
 
 **四步启动顺序与常见问题**见 [浏览器测试-启动说明.txt](浏览器测试-启动说明.txt)。
 
@@ -202,7 +217,10 @@ procurement-app/
 │   ├── start.ps1               启动前后端（各开一个新窗口，并等到就绪）
 │   ├── run-api.ps1             启动后端（uvicorn --reload）
 │   ├── run-web.ps1             启动前端（Vite）
-│   └── seed.ps1                灌入演示数据（部门 / 品类 / 供应商 / 预算）
+│   ├── seed.ps1                灌入演示数据（部门 / 品类 / 供应商 / 预算 / 账号）
+│   ├── 启动-*.bat 等           上面几个脚本的双击包装（只转发，不重复实现）
+│   └── 浏览器自检.mjs          零依赖：起一个无窗口 Edge，把关键界面真跑一遍
+├── 启动项目.bat                双击一键启动：Docker + 数据库 + 前后端 + 打开浏览器
 ├── 浏览器测试-启动说明.txt     四步启动顺序速查（含常见问题）
 ├── PROGRESS.md                 阶段验收清单与工作进度
 ├── Development progress.md     阶段四问总结
@@ -327,6 +345,8 @@ M3 已完成认证与权限；其余业务接口按阶段逐个补齐。
 
 认证用 **JWT 双令牌放 httpOnly Cookie**（access 15 分钟 / refresh 7 天，
 refresh 的 `Path` 限定到 `/api/v1/auth/refresh`）；登录连续失败 5 次返回 **429**。
+前端拿到 401 时会**自动续期一次并重放请求**（并发的多个 401 只续一次），
+所以令牌过期不会把正在用的人踢回登录页。
 写操作统一带 `Idempotency-Key`；并发编辑以响应中的 `version` 为准，冲突返回 **409**。
 统一错误体固定为：
 
@@ -362,6 +382,23 @@ npx vitest run
 npm run build
 ```
 
+### 浏览器自检（渲染与交互）
+
+上面那些检查看不到"页面渲染成什么样、点了会不会动"。这一条补上：
+
+```powershell
+# 前后端在跑的前提下执行（先 .\scripts\启动-前后端.bat）
+node scripts\浏览器自检.mjs
+```
+
+它会自己起一个**无窗口** Edge（独立配置目录，不碰你自己开着的那份），连它的调试
+接口，在真实浏览器内核里走一遍：路由守卫、按角色渲染的菜单、无权限提示页、
+登录页的显示/隐藏密码开关、新建品类、审批策略 422 的原文、预算的元⇄分。
+退出码 0 = 全过。
+
+**零依赖**——只用 Node 自带的 `fetch` 和 `WebSocket`，不需要装 Playwright 之类的库。
+注意 C 组会往开发库写一条 `SELFCHECK-*` 前缀的品类和一条预算（方便你认出来）。
+
 ### 三条分层自查（提交前跑，应全部无输出）
 
 纪律只写在文档里会失效，所以这三条做成了可执行的检查：
@@ -383,7 +420,8 @@ Select-String -Path backend\app\infrastructure\repositories\*.py -Pattern "\.com
 | 前端 `localhost:5173` | ✅ HTTP 200，Vite 6.4.3 |
 | Vite 代理 → 后端 | ✅ `/health/ready` 经 5173 返回 `database: up` |
 | `pytest`（M3 收尾） | ✅ 88 passed（unit 50 + integration 38） |
-| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 8 passed / 233.93 KB（gzip 73.61） |
+| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 234.71 KB（gzip 73.86） |
+| `node scripts\浏览器自检.mjs`（无窗口 Edge + CDP） | ✅ 11 项全过 |
 | `ruff` / `mypy` | ✅ All checks passed / 29 files, no issues |
 | 三条分层自查 | ✅ 全部无输出 |
 

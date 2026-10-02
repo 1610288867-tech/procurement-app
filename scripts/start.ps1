@@ -61,8 +61,22 @@ function Test-PortBusy {
 }
 
 function Start-InNewWindow {
+    <#
+        在新窗口里跑一个脚本（后端 / 前端）。
+
+        用**当前这个 PowerShell 自己的可执行文件**，不要写死 powershell.exe：
+        写死会把子窗口钉死在系统自带的 5.1 上 —— 父脚本在 7 里跑得好好的，
+        子窗口却在 5.1 里跑，将来 run-api.ps1 / run-web.ps1 一旦用了 PowerShell 7
+        的写法，就会出现"明明启动成功、新窗口却立刻报错"的怪事。
+
+        为什么不用 $PSHOME：不同版本目录下的可执行文件名不一样
+        （pwsh.exe / powershell.exe），直接取当前进程的映像路径最稳。
+    #>
     param([Parameter(Mandatory)][string]$Script)
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+    # 取不到就退回 powershell.exe，不让这一步把整个启动流程卡住
+    $shell = 'powershell.exe'
+    try { $shell = (Get-Process -Id $PID).Path } catch { }
+    Start-Process -FilePath $shell -ArgumentList @(
         '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot $Script)
     )
 }
@@ -71,15 +85,52 @@ function Wait-HttpOk {
     param([Parameter(Mandatory)][string]$Url)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        try {
-            $response = Invoke-WebRequest -Uri $Url -SkipHttpErrorCheck -TimeoutSec 3
-            if ($response.StatusCode -lt 500) { return $true }
-        } catch {
-            # 还没起来，继续等
-        }
+        if (Test-HttpResponding -Url $Url) { return $true }
         Start-Sleep -Milliseconds 500
     }
     return $false
+}
+
+function Test-HttpResponding {
+    <#
+        探测一次"这个地址有没有 HTTP 服务在应答"。
+
+        **不要用 -SkipHttpErrorCheck** —— 那是 PowerShell 7 才有的参数。
+        在 Windows PowerShell 5.1 下它会直接报"找不到参数"，又被 catch 吞掉，
+        于是探测永远失败：表现为等满 60 秒后假报"未就绪"，而服务其实是好的（实测踩过）。
+
+        5.1 的兼容做法：4xx/5xx 会抛异常，但**抛异常本身就说明服务在监听**，
+        从异常里把状态码取出来判断即可 —— 那和"连接被拒绝"是两回事。
+    #>
+    param([Parameter(Mandatory)][string]$Url)
+    try {
+        # -UseBasicParsing：5.1 上没有它会去依赖 IE 引擎，可能直接报错；
+        # PowerShell 7 也接受这个参数（只为向后兼容而保留）。
+        $response = Invoke-WebRequest -Uri $Url -TimeoutSec 3 -UseBasicParsing
+        return ($response.StatusCode -lt 500)
+    } catch {
+        $status = Get-HttpStatusCode -ErrorRecord $_
+        if ($null -eq $status) { return $false }
+        return ($status -lt 500)
+    }
+}
+
+function Get-HttpStatusCode {
+    <#
+        从 Invoke-WebRequest 抛出的异常里取 HTTP 状态码；取不到返回 $null。
+
+        "取不到"= 连接被拒 / DNS 失败 / 超时 —— 那才是真的没起来。
+        注意别写成 [int]$null：PowerShell 里 [int]$null 等于 0，
+        0 比 500 小，会把"连不上"误判成"已就绪"。
+    #>
+    param([Parameter(Mandatory)][System.Management.Automation.ErrorRecord]$ErrorRecord)
+    try {
+        $response = $ErrorRecord.Exception.Response
+        if ($null -eq $response -or $null -eq $response.StatusCode) { return $null }
+        return [int]$response.StatusCode
+    } catch {
+        return $null
+    }
 }
 
 # ---- 前置检查：数据库容器 ----

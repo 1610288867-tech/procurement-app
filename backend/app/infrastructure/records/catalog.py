@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -118,6 +119,13 @@ class BudgetRecord(Base):
     __table_args__ = (
         # 少了这条唯一约束，M6 的可用余额就会算错
         UniqueConstraint("department_id", "year", "category_id", name="uq_budget_scope"),
+        # 数据库兜底：应用层（M6 的条件更新）总有一条路径没想到。
+        # 有它，超预留最多是「这行更新失败」，而不是「账面数字悄悄变成负数」。
+        CheckConstraint(
+            "amount_reserved >= 0 AND amount_spent >= 0 "
+            "AND amount_reserved + amount_spent <= amount_total",
+            name="ck_budget_not_overdrawn",
+        ),
         Index("ix_budgets_department_year", "department_id", "year"),
     )
 

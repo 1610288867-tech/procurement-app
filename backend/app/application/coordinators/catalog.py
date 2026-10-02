@@ -30,8 +30,16 @@ class CatalogCoordinator:
 
     # ------------------------------------------------------------------ 供应商
 
-    async def list_suppliers(self, *, only_active: bool = True) -> Sequence[SupplierView]:
-        return await self._catalog.list_suppliers(only_active=only_active)
+    async def list_suppliers(
+        self, *, only_active: bool = True, only_qualified: bool = True
+    ) -> Sequence[SupplierView]:
+        """`only_qualified=False` 只有管理员列表会用（要能看到已过期/已停用的）。
+
+        业务上的选人只能拿到 `only_qualified=True` 的结果 —— 资质过期即不可选。
+        """
+        return await self._catalog.list_suppliers(
+            only_active=only_active, only_qualified=only_qualified
+        )
 
     async def create_supplier(
         self,

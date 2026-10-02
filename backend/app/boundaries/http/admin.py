@@ -114,10 +114,17 @@ class OkOut(BaseModel):
 @router.get(
     "/suppliers",
     response_model=list[SupplierOut],
-    summary="列出供应商（含已停用）",
+    summary="列出供应商（含已停用、已过资质有效期）",
 )
 async def admin_list_suppliers(session: SessionDep) -> list[SupplierOut]:
-    records = await catalog_coordinator(session).list_suppliers(only_active=False)
+    """管理员列表要看得全：停用的、资质过期的都得在这儿能查到。
+
+    否则"这家供应商怎么不见了"就没法排查 —— 公开列表按规则把它们藏起来是对的，
+    但管理端必须留有它们的痕迹（`disabled_reason` / `qualification_expires_at`）。
+    """
+    records = await catalog_coordinator(session).list_suppliers(
+        only_active=False, only_qualified=False
+    )
     return [SupplierOut.model_validate(record) for record in records]
 
 

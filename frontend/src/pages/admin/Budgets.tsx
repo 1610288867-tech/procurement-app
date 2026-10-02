@@ -1,4 +1,4 @@
-/** 预算：部门 × 年度 × 品类。
+/** 预算：部门 × 年度 × 品类（M4 重刷样式）。
  *
  * 界面填「元」，请求体发「分」，库里存「分」——换算只走 `lib/money.ts`。
  * 三个金额字段（总额 / 已预留 / 已花）现在就都展示出来，
@@ -8,13 +8,27 @@
 import { useState, type FormEvent } from "react";
 
 import {
+  useAdminCategories,
   useBudgets,
   useCreateBudget,
   useDepartments,
-  useAdminCategories,
 } from "../../api/hooks/useCatalog";
 import { fenToYuan, formatFen, yuanToFen } from "../../lib/money";
-import { FormError, Section, inputClass } from "./_ui";
+import {
+  Button,
+  Card,
+  Cell,
+  EmptyState,
+  ErrorNote,
+  Field,
+  HintNote,
+  Input,
+  Loading,
+  PageHeader,
+  Row,
+  Select,
+  Table,
+} from "../../components/ui";
 
 export default function AdminBudgets() {
   const departments = useDepartments();
@@ -62,21 +76,24 @@ export default function AdminBudgets() {
   }
 
   return (
-    <section className="space-y-6">
-      <Section title="新增预算">
+    <>
+      <PageHeader
+        title="预算"
+        description="部门 × 年度 × 品类；金额界面显示「元」，库里存「分」。"
+      />
+
+      <Card title="新增预算">
         {!ready && (
-          <p className="mb-3 text-sm text-amber-700">
-            先要有至少一个部门和采购品类，才能配预算。
-          </p>
+          <div className="mb-4">
+            <HintNote>先要有至少一个部门和采购品类，才能配预算。</HintNote>
+          </div>
         )}
-        <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col text-sm text-slate-600">
-            部门
-            <select
+        <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-4">
+          <Field label="部门">
+            <Select
               value={departmentId}
               onChange={(event) => setDepartmentId(event.target.value)}
               required
-              className={inputClass}
             >
               <option value="">请选择</option>
               {(departments.data ?? []).map((item) => (
@@ -84,15 +101,14 @@ export default function AdminBudgets() {
                   {item.name}
                 </option>
               ))}
-            </select>
-          </label>
-          <label className="flex flex-col text-sm text-slate-600">
-            品类
-            <select
+            </Select>
+          </Field>
+
+          <Field label="品类">
+            <Select
               value={categoryId}
               onChange={(event) => setCategoryId(event.target.value)}
               required
-              className={inputClass}
             >
               <option value="">请选择</option>
               {(categories.data ?? []).map((item) => (
@@ -100,104 +116,102 @@ export default function AdminBudgets() {
                   {item.name}
                 </option>
               ))}
-            </select>
-          </label>
-          <label className="flex flex-col text-sm text-slate-600">
-            年度
-            <input
+            </Select>
+          </Field>
+
+          <Field label="年度">
+            <Input
+              className="w-24"
               type="number"
               min={2000}
               max={2100}
               value={year}
               onChange={(event) => setYear(event.target.value)}
               required
-              className={`${inputClass} w-24`}
             />
-          </label>
-          <label className="flex flex-col text-sm text-slate-600">
-            预算金额（元）
-            <input
+          </Field>
+
+          <Field label="预算金额（元）">
+            <Input
+              className="w-32 text-right"
               value={amountYuan}
               onChange={(event) => setAmountYuan(event.target.value)}
               required
-              className={`${inputClass} w-32 text-right`}
             />
-          </label>
-          <button
-            type="submit"
-            disabled={!ready || createBudget.isPending}
-            className="rounded bg-slate-800 px-4 py-1.5 text-sm text-white disabled:opacity-50"
-          >
-            {createBudget.isPending ? "提交中…" : "新增"}
-          </button>
-        </form>
-        <p className="mt-2 text-xs text-slate-500">
-          填 1000 元 → 请求体发 <code>100000</code>（分）→ 库里也是 <code>100000</code>。
-        </p>
-        {localError && <p className="mt-3 text-sm text-red-600">{localError}</p>}
-        <FormError error={createBudget.error} />
-      </Section>
+          </Field>
 
-      <Section title="预算列表">
-        {budgets.isPending && <p className="text-slate-500">加载中…</p>}
-        {budgets.isError && <p className="text-red-600">{(budgets.error as Error).message}</p>}
+          <Button type="submit" disabled={!ready || createBudget.isPending}>
+            {createBudget.isPending ? "提交中…" : "新增"}
+          </Button>
+        </form>
+
+        <p className="mt-3 text-xs text-muted">
+          填 1000 元 → 请求体发 <code className="font-mono">100000</code>（分）→
+          库里也是 <code className="font-mono">100000</code>。
+        </p>
+        {localError && (
+          <p className="mt-3 rounded-sm border border-danger/30 bg-danger-bg px-3 py-2 text-sm text-danger">
+            {localError}
+          </p>
+        )}
+        <ErrorNote error={createBudget.error} />
+      </Card>
+
+      <Card title="预算列表">
+        {budgets.isPending && <Loading />}
+        <ErrorNote error={budgets.error} />
+
         {budgets.data && budgets.data.length === 0 && (
-          <p className="text-slate-500">还没有预算。</p>
+          <EmptyState>还没有预算。</EmptyState>
         )}
+
         {budgets.data && budgets.data.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 text-slate-500">
-              <tr>
-                <th className="py-2 font-medium">部门</th>
-                <th className="py-2 font-medium">品类</th>
-                <th className="py-2 font-medium">年度</th>
-                <th className="py-2 text-right font-medium">总额</th>
-                <th className="py-2 text-right font-medium">已预留</th>
-                <th className="py-2 text-right font-medium">已花</th>
-                <th className="py-2 text-right font-medium">可用</th>
-              </tr>
-            </thead>
-            <tbody>
-              {budgets.data.map((budget) => {
-                const available =
-                  budget.amount_total_fen -
-                  budget.amount_reserved_fen -
-                  budget.amount_spent_fen;
-                return (
-                  <tr key={budget.id} className="border-b border-slate-100">
-                    <td className="py-2 text-slate-800">
-                      {departmentName.get(budget.department_id) ?? "—"}
-                    </td>
-                    <td className="py-2 text-slate-800">
-                      {categoryName.get(budget.category_id) ?? "—"}
-                    </td>
-                    <td className="py-2 text-slate-600">{budget.year}</td>
-                    <td className="py-2 text-right font-mono text-slate-700">
-                      {formatFen(budget.amount_total_fen)}
-                    </td>
-                    <td className="py-2 text-right font-mono text-slate-700">
-                      {formatFen(budget.amount_reserved_fen)}
-                    </td>
-                    <td className="py-2 text-right font-mono text-slate-700">
-                      {formatFen(budget.amount_spent_fen)}
-                    </td>
-                    <td
-                      className={
-                        available > 0
-                          ? "py-2 text-right font-mono text-green-700"
-                          : "py-2 text-right font-mono text-red-600"
-                      }
-                      title={`${fenToYuan(available)} 元`}
-                    >
+          <Table
+            head={[
+              "部门",
+              "品类",
+              "年度",
+              <span className="block text-right">总额</span>,
+              <span className="block text-right">已预留</span>,
+              <span className="block text-right">已花</span>,
+              <span className="block text-right">可用</span>,
+            ]}
+          >
+            {budgets.data.map((budget) => {
+              const available =
+                budget.amount_total_fen -
+                budget.amount_reserved_fen -
+                budget.amount_spent_fen;
+              return (
+                <Row key={budget.id}>
+                  <Cell>{departmentName.get(budget.department_id) ?? "—"}</Cell>
+                  <Cell>{categoryName.get(budget.category_id) ?? "—"}</Cell>
+                  <Cell className="text-muted">{budget.year}</Cell>
+                  <Cell className="text-right font-mono">
+                    {formatFen(budget.amount_total_fen)}
+                  </Cell>
+                  <Cell className="text-right font-mono text-muted">
+                    {formatFen(budget.amount_reserved_fen)}
+                  </Cell>
+                  <Cell className="text-right font-mono text-muted">
+                    {formatFen(budget.amount_spent_fen)}
+                  </Cell>
+                  <Cell
+                    className={
+                      "text-right font-mono " +
+                      (available > 0 ? "text-success" : "text-danger")
+                    }
+                  >
+                    <span title={`${fenToYuan(available)} 元`}>
                       {formatFen(available)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    </span>
+                  </Cell>
+                </Row>
+              );
+            })}
+          </Table>
         )}
-      </Section>
-    </section>
+      </Card>
+    </>
   );
 }

@@ -4,6 +4,86 @@
    也不需要 postcss.config.js（用的是 @tailwindcss/vite 插件）。
    本机 Node 24 装到的就是 v4，所以没有 `npx tailwindcss init -p` 那一步。 */
 
-:root {
-  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+/* ============================ M4 · 设计令牌 ============================
+   风格基准取自 MiMo 文档站（暖白极简）：页面底 #fcfaf8、卡片 #faf7f3、
+   分区 #f0ebe5、标题 #1a1a1a、次要文字 rgba(0,0,0,.55)。
+   这些值是在参考站上取计算样式量出来的，不是照着截图猜的。
+
+   **为什么把令牌集中在这里、而不是散在页面里写 color-[#faf7f3]**：
+   颜色一旦散进二十几个文件，改一次风格就得全局搜索替换，而且必然漏。
+   集中成变量之后，换肤只动这一个文件；页面里写的是语义名（bg-card / text-ink），
+   读代码时能直接看出"这是卡片底色"，而不是一串看不出含义的十六进制。
+
+   Tailwind v4 的 `@theme` 会把每个变量同时暴露成：
+     - CSS 变量      var(--color-card)
+     - 工具类        bg-card / text-ink / border-line / rounded-md
+   所以页面里不需要写 var(...)，也不需要记住色号。
+   ======================================================================= */
+
+@theme {
+  /* ---- 版面底色（暖白三阶）----
+     层次是**抬起来**的：页面最暖 → 侧边栏再深一点 → 卡片最亮。
+     反过来的话卡片会显得"陷进去"，内容区就没有承载感了。 */
+  --color-page: #fcfaf8; /* 页面底 */
+  --color-card: #ffffff; /* 卡片 / 面板 */
+  --color-section: #f4efe9; /* 分区 / 表头 / 侧边栏 */
+  --color-hover: #efe8e0; /* 悬停态 */
+
+  /* ---- 前景（三级文字）---- */
+  --color-ink: #1a1a1a; /* 标题 */
+  --color-body: #1f2329; /* 正文 */
+  --color-muted: rgba(0, 0, 0, 0.55); /* 次要说明 */
+  --color-faint: rgba(0, 0, 0, 0.38); /* 占位、禁用 */
+
+  /* ---- 线 ---- */
+  --color-line: #e8e2da; /* 常规边框 */
+  --color-line-strong: #d9d2c8; /* 输入框边框 */
+
+  /* ---- 主按钮（近黑）---- */
+  --color-primary: #171717;
+  --color-primary-fg: #fafafa;
+  --color-primary-hover: #333333;
+
+  /* ---- 语义色（文字 / 底色成对）---- */
+  --color-success: #15803d;
+  --color-success-bg: #ecfdf3;
+  --color-warning: #b45309;
+  --color-warning-bg: #fff6ed;
+  --color-danger: #b42318;
+  --color-danger-bg: #fef3f2;
+
+  /* ---- 圆角：参考站是 .625rem，文档页的按钮量到 6px，取后者 ----
+     只给 sm/md 两档：这个界面里需要圆角的东西只有按钮、输入框、卡片三类，
+     再多一档就是没有区别的区别。 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  /* ---- 字体：参考站用 inter，本机通常没装，退化到系统字体栈 ----
+     中文必须显式带上"Microsoft YaHei"，否则 Windows 上会退化到宋体。 */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", "Microsoft YaHei",
+    sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+}
+
+/* 基础层：只做三件事——底色、正文色、字体。其余交给工具类。 */
+@layer base {
+  html {
+    background-color: var(--color-page);
+    color: var(--color-body);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 数字与编码要能上下对齐：金额列、UUID、编码都靠它 */
+  code,
+  kbd,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  /* 焦点环统一成主色，别用浏览器默认的蓝——那是这套配色里唯一的冷色 */
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
 }

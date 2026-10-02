@@ -56,7 +56,9 @@ class BudgetView(Protocol):
 
 class CatalogRepositoryPort(Protocol):
     # ---- 供应商 ----
-    async def list_suppliers(self, *, only_active: bool = True) -> Sequence[SupplierView]: ...
+    async def list_suppliers(
+        self, *, only_active: bool = True, only_qualified: bool = True
+    ) -> Sequence[SupplierView]: ...
 
     async def create_supplier(
         self,

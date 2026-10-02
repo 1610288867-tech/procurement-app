@@ -1,8 +1,14 @@
-/** 应用外壳：查询客户端 + 路由 + 布局。
+/** 应用外壳：查询客户端 + 路由 + 侧边栏骨架（M4）。
  *
- * 页面本身在 src/pages/，路由表在 src/router.tsx。
- * 顶栏显示当前账号并按角色渲染菜单 —— **这只是体验优化**，
- * 后端每个接口都会独立校验。
+ * ============================ 布局 ============================
+ *   左侧固定侧边栏（品牌 / 导航 / 账号）＋ 右侧内容区
+ *
+ * 菜单**按角色渲染**：这只是体验优化，后端每个接口都会独立校验
+ * （见 components/RequireAuth.tsx 的说明）。
+ *
+ * 响应式只做一件事：窄屏时侧边栏折到顶部并横向排开。
+ * 不做抽屉、不做汉堡菜单 —— 这个系统的用户是办公场景，桌面为主，
+ * 多一层交互状态就多一类 bug，而它换不来实际收益。
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,76 +29,80 @@ const queryClient = new QueryClient({
 });
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-  isActive ? "font-medium text-slate-900" : "text-slate-500 hover:text-slate-800";
+  "block rounded-sm px-3 py-2 text-sm transition-colors " +
+  (isActive
+    ? "bg-primary font-medium text-primary-fg"
+    : "text-muted hover:bg-hover hover:text-ink");
 
-function TopBar() {
+function NavItem({ to, end, children }: { to: string; end?: boolean; children: string }) {
+  return (
+    <NavLink to={to} end={end} className={navLinkClass}>
+      {children}
+    </NavLink>
+  );
+}
+
+function Sidebar() {
   const me = useMe();
   const logout = useLogout();
   const navigate = useNavigate();
   const isAdmin = me.data?.roles.includes("ADMIN") ?? false;
 
   return (
-    <>
-      <h1 className="text-2xl font-bold text-slate-900">
-        <Link to="/">企业采购审批系统</Link>
-      </h1>
-      <p className="mt-1 text-sm text-slate-500">
-        个人学习项目 · 动态多级审批 / 预算并发预留 / 三单匹配
-      </p>
-      <nav className="mt-3 flex flex-wrap items-center gap-4 text-sm">
-        <NavLink to="/" className={navLinkClass} end>
+    <aside className="flex w-full shrink-0 flex-col gap-6 border-line bg-section p-4 md:sticky md:top-0 md:h-screen md:w-60 md:border-r md:p-5">
+      <div>
+        <p className="text-xs tracking-wide text-muted">个人学习项目</p>
+        <Link to="/" className="text-base font-semibold text-ink">
+          企业采购审批系统
+        </Link>
+      </div>
+
+      <nav data-testid="app-nav" className="flex flex-wrap gap-1 md:flex-col">
+        <NavItem to="/" end>
           环境自检
-        </NavLink>
-        {me.data && (
-          <NavLink to="/suppliers" className={navLinkClass}>
-            合格供应商
-          </NavLink>
-        )}
+        </NavItem>
+        {me.data && <NavItem to="/suppliers">合格供应商</NavItem>}
         {isAdmin && (
           <>
-            <span className="text-slate-300">|</span>
-            <NavLink to="/admin/categories" className={navLinkClass}>
-              采购品类
-            </NavLink>
-            <NavLink to="/admin/suppliers" className={navLinkClass}>
-              供应商管理
-            </NavLink>
-            <NavLink to="/admin/budgets" className={navLinkClass}>
-              预算
-            </NavLink>
+            <p className="mt-3 hidden px-3 text-xs tracking-wide text-faint md:block">
+              管理员
+            </p>
+            <NavItem to="/admin/categories">采购品类</NavItem>
+            <NavItem to="/admin/suppliers">供应商管理</NavItem>
+            <NavItem to="/admin/budgets">预算</NavItem>
           </>
         )}
-
-        <span className="ml-auto flex items-center gap-3">
-          {me.data ? (
-            <>
-              <span className="text-slate-700">
-                {me.data.full_name}
-                <span className="ml-1 font-mono text-xs text-slate-400">
-                  {me.data.roles.join("+")}
-                </span>
-              </span>
-              <button
-                type="button"
-                className="text-slate-500 hover:text-slate-800 disabled:opacity-50"
-                disabled={logout.isPending}
-                onClick={() =>
-                  logout.mutate(undefined, {
-                    onSuccess: () => navigate("/login", { replace: true }),
-                  })
-                }
-              >
-                退出
-              </button>
-            </>
-          ) : (
-            <NavLink to="/login" className={navLinkClass}>
-              登录
-            </NavLink>
-          )}
-        </span>
       </nav>
-    </>
+
+      <div className="mt-auto flex items-center justify-between gap-2 border-t border-line pt-4 text-sm">
+        {me.data ? (
+          <>
+            <span className="min-w-0">
+              <span className="block truncate text-body">{me.data.full_name}</span>
+              <span className="block truncate font-mono text-xs text-faint">
+                {me.data.roles.join("+")}
+              </span>
+            </span>
+            <button
+              type="button"
+              className="shrink-0 text-muted hover:text-ink disabled:opacity-50"
+              disabled={logout.isPending}
+              onClick={() =>
+                logout.mutate(undefined, {
+                  onSuccess: () => navigate("/login", { replace: true }),
+                })
+              }
+            >
+              退出
+            </button>
+          </>
+        ) : (
+          <NavLink to="/login" className="text-muted hover:text-ink">
+            登录
+          </NavLink>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -100,15 +110,14 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <main className="min-h-screen bg-slate-50 p-8">
-          <div className="mx-auto max-w-3xl space-y-6">
-            <header>
-              <TopBar />
-            </header>
-
-            <AppRoutes />
-          </div>
-        </main>
+        <div className="flex min-h-screen flex-col bg-page md:flex-row">
+          <Sidebar />
+          <main className="min-w-0 flex-1 px-6 py-6 md:px-10 md:py-8">
+            <div className="mx-auto max-w-5xl space-y-6">
+              <AppRoutes />
+            </div>
+          </main>
+        </div>
       </BrowserRouter>
     </QueryClientProvider>
   );

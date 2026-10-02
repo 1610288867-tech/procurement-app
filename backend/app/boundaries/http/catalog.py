@@ -81,6 +81,11 @@ class BudgetOut(BaseModel):
 
 @router.get("/api/v1/suppliers", response_model=list[SupplierOut], summary="列出供应商")
 async def list_suppliers(session: SessionDep, only_active: bool = True) -> list[SupplierOut]:
+    """只返回**合格**供应商：未停用、且资质未过期（业务规则第 4 条）。
+
+    过期的按查询时过滤挡在外面，不用定时任务 —— 定时任务没跑成，
+    过期供应商就会一直挂在可选列表里。
+    """
     records = await catalog_coordinator(session).list_suppliers(only_active=only_active)
     return [SupplierOut.model_validate(record) for record in records]
 

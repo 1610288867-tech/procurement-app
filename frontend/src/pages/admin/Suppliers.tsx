@@ -1,12 +1,31 @@
 /** 供应商管理：新增 + 停用（停用要填原因，业务规则要求留痕）。
  *
- * 公开的 /suppliers 只读；写操作都在 /admin 下，M3 会给它加上角色依赖。
+ * 公开的 /suppliers 只读；写操作都在 /admin 下，M3 起要求 ADMIN 角色。
+ * 这一页刻意列出**含已停用**的全部供应商 —— 公开列表按规则藏起来的，
+ * 管理端必须留有痕迹，否则"这家怎么不见了"没法排查。
  */
 
 import { useState, type FormEvent } from "react";
 
-import { useAdminSuppliers, useCreateSupplier, useDisableSupplier } from "../../api/hooks/useCatalog";
-import { FormError, Section, inputClass } from "./_ui";
+import {
+  useAdminSuppliers,
+  useCreateSupplier,
+  useDisableSupplier,
+} from "../../api/hooks/useCatalog";
+import {
+  Button,
+  Card,
+  Cell,
+  EmptyState,
+  ErrorNote,
+  Field,
+  Input,
+  Loading,
+  PageHeader,
+  Row,
+  StatusBadge,
+  Table,
+} from "../../components/ui";
 
 export default function AdminSuppliers() {
   const suppliers = useAdminSuppliers();
@@ -50,134 +69,112 @@ export default function AdminSuppliers() {
   }
 
   return (
-    <section className="space-y-6">
-      <Section title="新增供应商">
-        <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col text-sm text-slate-600">
-            名称
-            <input
+    <>
+      <PageHeader
+        title="供应商管理"
+        description="停用必须填原因（业务规则要求留痕）；已停用与资质过期的都会列在这里。"
+      />
+
+      <Card title="新增供应商">
+        <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-4">
+          <Field label="名称">
+            <Input
               value={name}
               onChange={(event) => setName(event.target.value)}
               required
               maxLength={200}
-              className={inputClass}
             />
-          </label>
-          <label className="flex flex-col text-sm text-slate-600">
-            编码
-            <input
+          </Field>
+          <Field label="编码">
+            <Input
+              className="font-mono"
               value={code}
               onChange={(event) => setCode(event.target.value)}
               required
               maxLength={64}
               placeholder="SUP-001"
-              className={`${inputClass} font-mono`}
             />
-          </label>
-          <label className="flex flex-col text-sm text-slate-600">
-            资质有效期（可选）
-            <input
+          </Field>
+          <Field label="资质有效期" hint="留空 = 长期有效">
+            <Input
               type="date"
               value={expiry}
               onChange={(event) => setExpiry(event.target.value)}
-              className={inputClass}
             />
-          </label>
-          <button
-            type="submit"
-            disabled={createSupplier.isPending}
-            className="rounded bg-slate-800 px-4 py-1.5 text-sm text-white disabled:opacity-50"
-          >
+          </Field>
+          <Button type="submit" disabled={createSupplier.isPending}>
             {createSupplier.isPending ? "提交中…" : "新增"}
-          </button>
+          </Button>
         </form>
-        <FormError error={createSupplier.error} />
-      </Section>
+        <ErrorNote error={createSupplier.error} />
+      </Card>
 
-      <Section title="供应商（含已停用）">
-        {suppliers.isPending && <p className="text-slate-500">加载中…</p>}
-        {suppliers.isError && (
-          <p className="text-red-600">{(suppliers.error as Error).message}</p>
-        )}
+      <Card title="供应商（含已停用）">
+        {suppliers.isPending && <Loading />}
+        <ErrorNote error={suppliers.error} />
+
         {suppliers.data && suppliers.data.length === 0 && (
-          <p className="text-slate-500">还没有供应商。</p>
+          <EmptyState>还没有供应商。</EmptyState>
         )}
+
         {suppliers.data && suppliers.data.length > 0 && (
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-slate-200 text-slate-500">
-              <tr>
-                <th className="py-2 font-medium">编码</th>
-                <th className="py-2 font-medium">名称</th>
-                <th className="py-2 font-medium">资质到期</th>
-                <th className="py-2 font-medium">状态</th>
-                <th className="py-2 font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {suppliers.data.map((supplier) => (
-                <tr key={supplier.id} className="border-b border-slate-100 align-top">
-                  <td className="py-2 font-mono text-slate-700">{supplier.code}</td>
-                  <td className="py-2 text-slate-800">{supplier.name}</td>
-                  <td className="py-2 text-slate-600">
-                    {supplier.qualification_expires_at?.slice(0, 10) ?? "—"}
-                  </td>
-                  <td className="py-2">
-                    <span
-                      className={
-                        supplier.active
-                          ? "rounded bg-green-100 px-2 py-0.5 text-xs text-green-800"
-                          : "rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
-                      }
+          <Table head={["编码", "名称", "资质到期", "状态", "操作"]}>
+            {suppliers.data.map((supplier) => (
+              <Row key={supplier.id} className="align-top">
+                <Cell className="font-mono text-muted">{supplier.code}</Cell>
+                <Cell>{supplier.name}</Cell>
+                <Cell className="text-muted">
+                  {supplier.qualification_expires_at?.slice(0, 10) ?? "—"}
+                </Cell>
+                <Cell>
+                  <StatusBadge active={supplier.active} />
+                </Cell>
+                <Cell>
+                  {!supplier.active && <span className="text-faint">—</span>}
+                  {supplier.active && disableTarget !== supplier.id && (
+                    <button
+                      onClick={() => {
+                        setDisableTarget(supplier.id);
+                        setReason("");
+                      }}
+                      className="text-sm text-danger hover:underline"
                     >
-                      {supplier.active ? "启用" : "停用"}
-                    </span>
-                  </td>
-                  <td className="py-2">
-                    {!supplier.active && <span className="text-slate-400">—</span>}
-                    {supplier.active && disableTarget !== supplier.id && (
-                      <button
-                        onClick={() => {
-                          setDisableTarget(supplier.id);
-                          setReason("");
-                        }}
-                        className="text-sm text-red-600 hover:underline"
+                      停用
+                    </button>
+                  )}
+                  {supplier.active && disableTarget === supplier.id && (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        autoFocus
+                        value={reason}
+                        onChange={(event) => setReason(event.target.value)}
+                        placeholder="停用原因"
+                        maxLength={200}
+                        className="w-40"
+                      />
+                      <Button
+                        variant="danger"
+                        className="px-2 py-1 text-xs"
+                        disabled={reason.trim() === "" || disableSupplier.isPending}
+                        onClick={() => handleDisable(supplier.id)}
                       >
-                        停用
+                        确认
+                      </Button>
+                      <button
+                        onClick={() => setDisableTarget(null)}
+                        className="text-xs text-muted hover:underline"
+                      >
+                        取消
                       </button>
-                    )}
-                    {supplier.active && disableTarget === supplier.id && (
-                      <div className="flex items-center gap-2">
-                        <input
-                          autoFocus
-                          value={reason}
-                          onChange={(event) => setReason(event.target.value)}
-                          placeholder="停用原因"
-                          maxLength={200}
-                          className="w-40 rounded border border-slate-300 px-2 py-1 text-sm"
-                        />
-                        <button
-                          disabled={reason.trim() === "" || disableSupplier.isPending}
-                          onClick={() => handleDisable(supplier.id)}
-                          className="rounded bg-red-600 px-2 py-1 text-xs text-white disabled:opacity-50"
-                        >
-                          确认
-                        </button>
-                        <button
-                          onClick={() => setDisableTarget(null)}
-                          className="text-xs text-slate-500 hover:underline"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    </div>
+                  )}
+                </Cell>
+              </Row>
+            ))}
+          </Table>
         )}
-        <FormError error={disableSupplier.error} />
-      </Section>
-    </section>
+        <ErrorNote error={disableSupplier.error} />
+      </Card>
+    </>
   );
 }

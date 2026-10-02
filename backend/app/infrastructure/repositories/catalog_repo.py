@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,10 +29,27 @@ class CatalogRepository:
 
     # ------------------------------------------------------------------ 供应商
 
-    async def list_suppliers(self, *, only_active: bool = True) -> list[SupplierRecord]:
+    async def list_suppliers(
+        self, *, only_active: bool = True, only_qualified: bool = True
+    ) -> list[SupplierRecord]:
+        """供应商列表。
+
+        `only_qualified` 实现业务规则第 4 条「资质过期即不可选」：
+        **用查询时过滤实现，不用定时任务** —— 定时任务会出现状态漂移
+        （任务没跑成，过期供应商就还挂在可选列表里）。
+
+        `qualification_expires_at` 为空的视为**长期有效**，不参与过滤。
+        """
         statement = select(SupplierRecord).order_by(SupplierRecord.name)
         if only_active:
             statement = statement.where(SupplierRecord.active.is_(True))
+        if only_qualified:
+            statement = statement.where(
+                or_(
+                    SupplierRecord.qualification_expires_at.is_(None),
+                    SupplierRecord.qualification_expires_at > func.now(),
+                )
+            )
         return list((await self.session.scalars(statement)).all())
 
     async def get_supplier(self, supplier_id: uuid.UUID) -> SupplierRecord | None:
