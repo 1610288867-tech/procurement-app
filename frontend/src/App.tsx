@@ -1,11 +1,17 @@
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+/** 应用外壳：查询客户端 + 路由 + 布局。
+ *
+ * 页面本身在 src/pages/，路由表在 src/router.tsx。
+ */
 
-import { api } from "./api/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Link, NavLink } from "react-router-dom";
+
+import AppRoutes from "./router";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // 401 不重试（M3 起会有登录页接管）
+      // 401 不重试（M3 起由登录页接管）
       retry: (failureCount, error) =>
         (error as { status?: number }).status === 401 ? false : failureCount < 2,
       refetchOnWindowFocus: false,
@@ -13,69 +19,46 @@ const queryClient = new QueryClient({
   },
 });
 
-/** M0 的验收页：能打开、能看到后端与数据库的健康状态。
- *
- * 从 M1 起这里会被真正的路由（router.tsx）替换，现在它只用来证明
- * 「前端 → Vite 代理 → FastAPI → PostgreSQL」这条链路是通的。
- */
-function HealthPanel() {
-  const { data, isPending, isError, error } = useQuery({
-    queryKey: ["health", "ready"],
-    queryFn: api.ready,
-    refetchInterval: 5000,
-  });
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-      <h2 className="mb-3 text-lg font-semibold text-slate-800">环境自检</h2>
-      {isPending && <p className="text-slate-500">检查中…</p>}
-      {isError && (
-        <p className="text-red-600">
-          后端不可达：{(error as Error).message}
-          <br />
-          <span className="text-sm text-slate-500">
-            先确认 uvicorn 在 8000 端口跑着，再确认数据库容器是 healthy。
-          </span>
-        </p>
-      )}
-      {data && (
-        <ul className="space-y-1 text-slate-700">
-          <li>
-            后端：<span className="font-mono text-green-700">{data.status}</span>
-          </li>
-          <li>
-            数据库：
-            <span className="font-mono text-green-700">{data.database}</span>
-          </li>
-        </ul>
-      )}
-    </div>
-  );
-}
+const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+  isActive ? "font-medium text-slate-900" : "text-slate-500 hover:text-slate-800";
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <main className="min-h-screen bg-slate-50 p-8">
-        <div className="mx-auto max-w-3xl space-y-6">
-          <header>
-            <h1 className="text-2xl font-bold text-slate-900">企业采购审批系统</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              M0 骨架 · 个人学习项目 · 动态多级审批 / 预算并发预留 / 三单匹配
-            </p>
-          </header>
+      <BrowserRouter>
+        <main className="min-h-screen bg-slate-50 p-8">
+          <div className="mx-auto max-w-3xl space-y-6">
+            <header>
+              <h1 className="text-2xl font-bold text-slate-900">
+                <Link to="/">企业采购审批系统</Link>
+              </h1>
+              <p className="mt-1 text-sm text-slate-500">
+                个人学习项目 · 动态多级审批 / 预算并发预留 / 三单匹配
+              </p>
+              <nav className="mt-3 flex flex-wrap gap-4 text-sm">
+                <NavLink to="/" className={navLinkClass} end>
+                  环境自检
+                </NavLink>
+                <NavLink to="/suppliers" className={navLinkClass}>
+                  合格供应商
+                </NavLink>
+                <span className="text-slate-300">|</span>
+                <NavLink to="/admin/categories" className={navLinkClass}>
+                  采购品类
+                </NavLink>
+                <NavLink to="/admin/suppliers" className={navLinkClass}>
+                  供应商管理
+                </NavLink>
+                <NavLink to="/admin/budgets" className={navLinkClass}>
+                  预算
+                </NavLink>
+              </nav>
+            </header>
 
-          <HealthPanel />
-
-          <section className="rounded-lg border border-dashed border-slate-300 p-6 text-sm text-slate-500">
-            <p className="font-medium text-slate-700">下一步（M1）</p>
-            <p className="mt-1">
-              用「供应商」打通 表 → ORM → 仓库 → 协调者 → 路由 → 页面 这条完整链路。
-              之后所有功能都是照这个模板扩展。
-            </p>
-          </section>
-        </div>
-      </main>
+            <AppRoutes />
+          </div>
+        </main>
+      </BrowserRouter>
     </QueryClientProvider>
   );
 }

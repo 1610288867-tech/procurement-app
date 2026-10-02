@@ -1,15 +1,30 @@
 # 薄封装：把基础设施的 compose 借到这里用。
 #
-# 真正的基础设施定义在 D:\develop\procurement\docker-compose.yml —— 代码与容器故意分开：
-# 容器是容器，代码是代码。数据库坏了不影响代码，代码重写也不用动容器。
+# 真正的基础设施定义在**仓库之外**，默认是 ..\develop\procurement\docker-compose.yml。
+# 代码与容器故意分开：容器是容器，代码是代码。
+# 数据库坏了不影响代码，代码重写也不用动容器。
 #
-# 用法（在 procurement-app 目录下，效果与去 D:\develop\procurement 执行完全一样）：
+# 用法（在 procurement-app 目录下，效果与去基础设施目录执行完全一样）：
 #   docker compose up -d
 #   docker compose ps
 #   docker compose exec db psql -U app -d procurement -c "select version();"
 #   docker compose stop
 #
+# 关于路径：这里是**相对路径**，按本文件所在目录解析——
+#     D:\procurement-app\..\develop\procurement\docker-compose.yml
+#   -> D:\develop\procurement\docker-compose.yml
+# 换机器时只要保持「代码仓库与基础设施目录同级」就能直接用；
+# 布局不同的话，把下面这行改成你自己的路径即可（绝对路径也接受）。
+# 克隆本仓库的人请照此自行调整，本文件只作示例。
+#
 # 需要 include 支持 Compose v2.20+（本机 v5.5.1，满足）。
+#
+# name 必须与基础设施那份推导出的项目名一致（procurement）。
+# 否则本目录会被推导成 procurement-app，成为**另一个 compose 项目**；
+# 而基础设施里 container_name: procurement-db 是写死的，
+# 两个项目各自去建同名容器 → up -d 直接报 "container name is already in use"。
+
+name: procurement
 
 include:
-  - path: D:/develop/procurement/docker-compose.yml
+  - path: ../develop/procurement/docker-compose.yml

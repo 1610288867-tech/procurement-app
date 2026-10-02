@@ -17,10 +17,16 @@ htmlcov/
 # ---- 附件目录（M7 起用）----
 backend/uploads/
 
+# ---- pip 被中断时留在当前目录的临时目录 ----
+# pip 正常运行会自己清掉；中途 Ctrl+C 或被杀掉就会留下 pip-install-* / pip-unpack-* 等，
+# 里面可能有几百 KB 的 .whl。加一条兜底，避免误提交。
+pip-*/
+
 # ---- 前端 ----
 node_modules/
 dist/
 dist-ssr/
+*.tsbuildinfo
 *.local
 .vite/
 

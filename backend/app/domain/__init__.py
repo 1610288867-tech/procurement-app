@@ -3,9 +3,12 @@
 ============================ 这一层的铁律 ============================
 本目录下的任何文件**不允许出现**：
 
-    import sqlalchemy
-    from fastapi import ...
-    import httpx / redis / minio / alembic
+    sqlalchemy 的 import
+    fastapi 的 import
+    httpx / redis / minio / alembic 的 import
+
+（这里刻意不写完整语句：一写，下面那条自查命令就会命中本文件自己，
+  检查永远有输出，等于失效。）
 
 一旦出现，说明分层错了。可以用这条命令自查（应无任何输出）：
 

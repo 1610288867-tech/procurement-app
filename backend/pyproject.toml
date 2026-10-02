@@ -9,6 +9,11 @@ requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# 应用里的引擎是模块级单例，连接池绑定在"创建它时的事件循环"上。
+# 若每个测试各建一个循环，第二个用例起就会报 RuntimeError: Event loop is closed。
+# 所以整个测试会话共用一个循环。
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 markers = [
     "unit: 纯函数测试，不连数据库（默认档，毫秒级）",
     "integration: 需要 PostgreSQL 与迁移的测试",
