@@ -20,12 +20,18 @@ from dataclasses import dataclass, field
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.database import SessionFactory
 from app.domain.permissions import ROLE_ADMIN
 from app.infrastructure.login_throttle import login_throttle
 from app.infrastructure.records.auth import UserRecord, UserRoleRecord
+from app.infrastructure.records.purchase import (
+    IdempotencyRecord,
+    PurchaseItemRecord,
+    PurchaseRequestRecord,
+    RequestEventRecord,
+)
 from app.infrastructure.security import hash_password
 from app.main import app
 
@@ -92,6 +98,35 @@ async def user_factory() -> AsyncIterator[UserFactory]:
     finally:
         async with SessionFactory() as session:
             if created:
+                # 先删引用这些账号的业务数据，再删账号本身。
+                # 为什么放在这里而不是各用例自己的清理器里：pytest 按相反顺序拆 fixture，
+                # 而这个工厂的清理**总是最后一个跑**；只要有任何一张表引用 users.id，
+                # 删账号就会撞外键，而且报错发生在 teardown 里，看不出是清理顺序的问题。
+                # M5 起 purchase_requests / request_events / idempotency_records 都引用它。
+                await session.execute(
+                    delete(RequestEventRecord).where(
+                        RequestEventRecord.actor_id.in_(created)
+                    )
+                )
+                await session.execute(
+                    delete(PurchaseItemRecord).where(
+                        PurchaseItemRecord.request_id.in_(
+                            select(PurchaseRequestRecord.id).where(
+                                PurchaseRequestRecord.requester_id.in_(created)
+                            )
+                        )
+                    )
+                )
+                await session.execute(
+                    delete(PurchaseRequestRecord).where(
+                        PurchaseRequestRecord.requester_id.in_(created)
+                    )
+                )
+                await session.execute(
+                    delete(IdempotencyRecord).where(
+                        IdempotencyRecord.actor_id.in_(created)
+                    )
+                )
                 await session.execute(
                     delete(UserRoleRecord).where(UserRoleRecord.user_id.in_(created))
                 )
@@ -113,7 +148,9 @@ async def admin_client(user_factory: UserFactory) -> AsyncIterator[AsyncClient]:
     """**已登录管理员**的客户端。
 
     M3 起 `/api/v1/admin/*` 要求 ADMIN 角色，主数据的集成测试都得用它。
-    公开只读接口（/api/v1/suppliers 等）不需要登录，用同一台 client 也能调。
+    M5 起业务接口（/api/v1/requests、/api/v1/approvals）也要求登录，
+    所以"随便挑一个已登录客户端"就用它。
+    （`/api/v1/suppliers` 已于 2026-10-03 从公开改为要求登录；department / category 仍公开。）
     """
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:

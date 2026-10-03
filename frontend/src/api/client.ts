@@ -48,12 +48,18 @@ const AUTH_PATHS = new Set([
 ]);
 
 function send(path: string, init: RequestInit): Promise<Response> {
+  // ⚠️ `...init` **必须放在最前面**。
+  // 对象字面量里后面的键会覆盖前面的：把 `...init` 写在 `headers` 之后，
+  // 调用方传进来的 headers（例如 M5 的 Idempotency-Key）会把默认的
+  // `Content-Type: application/json` 整个顶掉 —— 于是后端按表单去解析请求体，
+  // 报一句 "Input should be a valid dictionary or object to extract fields from"（422），
+  // 而前端看起来完全正常。实测踩过：只有带自定义头的接口会中招。
   return fetch(`${BASE}${path}`, {
+    ...init,
     // 同源时浏览器本来就会带 Cookie，写出来是为了 M10 前后端分源时不漏掉。
     // 另外它也是 M3 的 httpOnly Cookie 能生效的前提。
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
-    ...init,
   });
 }
 
@@ -188,6 +194,151 @@ export type Budget = {
   amount_spent_fen: number;
 };
 
+/** 采购申请状态（M5 只用到这四个；后九个状态随 M6–M9 加）。 */
+export type RequestStatus =
+  | "DRAFT"
+  | "IN_APPROVAL"
+  | "DISCARDED"
+  | "WITHDRAWN"
+  | "SOURCING"
+  | "REJECTED";
+
+export type RequestUrgency = "NORMAL" | "URGENT";
+
+/** 申请主单。金额一律「分」—— 名字里带 _fen，界面上的「元」只在 money.ts 换算。 */
+export type PurchaseRequest = {
+  id: string;
+  code: string;
+  requester_id: string;
+  department_id: string;
+  category_id: string;
+  title: string;
+  reason: string | null;
+  amount_total_fen: number;
+  urgency: RequestUrgency;
+  status: RequestStatus;
+  version: number;
+  form_data: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  submitted_at: string | null;
+  closed_at: string | null;
+};
+
+export type PurchaseItem = {
+  id: string;
+  line_no: number;
+  name: string;
+  spec: string | null;
+  quantity: number;
+  unit_price_fen: number;
+  amount_fen: number;
+};
+
+export type RequestEvent = {
+  id: string;
+  event_type: string;
+  from_status: RequestStatus | null;
+  to_status: RequestStatus | null;
+  actor_id: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+export type RequestDetail = {
+  request: PurchaseRequest;
+  items: PurchaseItem[];
+  timeline: RequestEvent[];
+};
+
+export type ItemInput = {
+  name: string;
+  spec?: string | null;
+  quantity: number;
+  /** 单价，单位：分（界面填「元」，由 money.ts 换算） */
+  unit_price_fen: number;
+};
+
+// ------------------------------------------------ 审批（M6）
+
+/** 审批任务状态。
+
+ * **刻意没有"还没轮到"这一档**：那件事由审批流的 `current_step_order` 表达。
+ * 同一个概念存两处（流说第 3 级、任务说自己在等）必然漂移，所以任务词表保持五档，
+ * 界面上的"未开始 ○"是**算出来的**，不是另一个状态。
+ */
+export type ApprovalTaskStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "SKIPPED"
+  | "CANCELLED";
+
+export type ApprovalMode = "SINGLE" | "ALL";
+
+export type ApprovalTask = {
+  id: string;
+  request_id: string;
+  step_order: number;
+  role: ApprovalRole;
+  mode: ApprovalMode;
+  status: ApprovalTaskStatus;
+  /** NULL = 未认领（只有或签会这样）；会签在建任务时就预分配 */
+  assignee_id: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  comment: string | null;
+  version: number;
+  created_at: string;
+};
+
+/** 待办列表里的申请摘要（金额、申请人、品类一次 JOIN 带出）。 */
+export type RequestSummary = {
+  id: string;
+  code: string;
+  title: string;
+  requester_id: string;
+  category_id: string;
+  category_name: string;
+  amount_total_fen: number;
+  urgency: RequestUrgency;
+  status: RequestStatus;
+  submitted_at: string | null;
+};
+
+export type TodoItem = { task: ApprovalTask; request: RequestSummary };
+
+export type TaskDetail = {
+  task: ApprovalTask;
+  request: RequestSummary;
+  /** 审批链全貌：界面上的"已完成 / 当前 / 未开始"由它 + current_step_order 推出 */
+  steps: ApprovalTask[];
+  current_step_order: number;
+  /** 这条任务分配给谁（未认领时为 null） */
+  assignee_name: string | null;
+};
+
+export type ApprovalFlow = {
+  request_id: string;
+  status: "RUNNING" | "APPROVED" | "REJECTED" | "CANCELLED";
+  current_step_order: number;
+  /** 提交那一刻的策略原件 —— 事后解释"为什么只走了两级"的依据 */
+  policy_snapshot: Record<string, unknown>;
+  policy_version: number;
+  started_at: string;
+  completed_at: string | null;
+  steps: ApprovalTask[];
+};
+
+export type DecisionResult = {
+  approved: boolean;
+  flow_status: string;
+  request_status: RequestStatus;
+  step_completed: boolean | null;
+  current_step_order: number | null;
+  comment: string | null;
+};
+
 // ------------------------------------------------------------------ 接口
 
 export const api = {
@@ -255,4 +406,99 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // ------------------------------------------------ 采购申请（M5）
+  listRequests: (params: { status?: RequestStatus; limit?: number; offset?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.status) query.set("status", params.status);
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.offset !== undefined) query.set("offset", String(params.offset));
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<{ items: PurchaseRequest[]; total: number }>(
+      `/api/v1/requests${suffix}`,
+    );
+  },
+  getRequest: (id: string) => request<RequestDetail>(`/api/v1/requests/${id}`),
+  createRequest: (body: {
+    category_id: string;
+    title: string;
+    reason?: string | null;
+    urgency?: RequestUrgency;
+    form_data?: Record<string, unknown>;
+  }) =>
+    request<PurchaseRequest>("/api/v1/requests", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  patchRequest: (
+    id: string,
+    body: {
+      version: number;
+      title?: string;
+      reason?: string | null;
+      urgency?: RequestUrgency;
+      category_id?: string;
+      form_data?: Record<string, unknown>;
+    },
+  ) =>
+    request<PurchaseRequest>(`/api/v1/requests/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  replaceItems: (id: string, version: number, items: ItemInput[]) =>
+    request<PurchaseRequest>(`/api/v1/requests/${id}/items`, {
+      method: "PUT",
+      body: JSON.stringify({ version, items }),
+    }),
+  /** 提交 / 撤回：**必须带幂等键**（重复执行会改变结果的动作）。 */
+  submitRequest: (id: string, version: number, idempotencyKey: string) =>
+    request<PurchaseRequest>(`/api/v1/requests/${id}/submit`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ version }),
+    }),
+  withdrawRequest: (id: string, version: number, idempotencyKey: string) =>
+    request<PurchaseRequest>(`/api/v1/requests/${id}/withdraw`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ version }),
+    }),
+  discardRequest: (id: string, version: number) =>
+    request<PurchaseRequest>(`/api/v1/requests/${id}/discard`, {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+
+  // ------------------------------------------------ 审批（M6）
+  /** 我的待办。**后端只返回"当前这一级"** —— 还没轮到的高级别不会出现。 */
+  listTodo: (params: { limit?: number; offset?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.offset !== undefined) query.set("offset", String(params.offset));
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<{ items: TodoItem[]; total: number }>(
+      `/api/v1/approvals/tasks${suffix}`,
+    );
+  },
+  getTask: (id: string) => request<TaskDetail>(`/api/v1/approvals/tasks/${id}`),
+  /** 认领（抢单）。只有未认领的**或签**任务能被认领：会签建单时就指定了人。 */
+  claimTask: (id: string, version: number) =>
+    request<ApprovalTask>(`/api/v1/approvals/tasks/${id}/claim`, {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+  approveTask: (id: string, version: number, comment?: string | null) =>
+    request<DecisionResult>(`/api/v1/approvals/tasks/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ version, comment: comment || null }),
+    }),
+  /** 驳回：**意见必填** —— 它是申请人唯一能看到的理由。 */
+  rejectTask: (id: string, version: number, comment: string) =>
+    request<DecisionResult>(`/api/v1/approvals/tasks/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ version, comment }),
+    }),
+  /** 审批链进度：申请人与审批人都能看（卡在谁那里一眼可见）。 */
+  getRequestFlow: (requestId: string) =>
+    request<ApprovalFlow>(`/api/v1/approvals/requests/${requestId}/flow`),
 };

@@ -268,9 +268,46 @@ async def test_admin_route_allows_an_admin(
     assert (await client.get("/api/v1/admin/suppliers")).status_code == 200
 
 
-async def test_public_catalog_stays_anonymous(
-    client: AsyncClient,
+async def test_catalog_endpoints_all_require_login(
+    client: AsyncClient, user_factory: UserFactory
 ) -> None:
-    """公开的只读主数据不因为 M3 加权限而变成要登录 —— 它的定位就是公开。"""
-    assert (await client.get("/api/v1/suppliers")).status_code == 200
-    assert (await client.get("/api/v1/departments")).status_code == 200
+    """主数据接口的公开边界（2026-10-03 全部收口）。
+
+    这三个接口**原先都是公开的**，理由写的是"申请表单要用的选择项"。但它们
+    只在**登录后的界面**里用得到，公开没有任何收益，反而暴露了：
+
+    - `/api/v1/categories/{id}` → **整份 `approval_policy`**（金额阈值与各级角色），
+      即"多少钱需要谁批"这条内控结构；
+    - `/api/v1/departments` → 部门树；
+    - `/api/v1/categories`、`/api/v1/suppliers` → 各类清单。
+
+    顺带收掉了 `only_active` 这个**客户端可控**的过滤器（传 `false` 可索取停用项）——
+    与供应商那次同样的理由：最窄的角色不该有"要不要过滤"的决定权。
+
+    这条同时钉住两个方向：**匿名一律 401**、**登录后照常可用**。
+    少了后半句，把接口整个关掉也能"通过"。
+    """
+    for path in (
+        "/api/v1/suppliers",
+        "/api/v1/departments",
+        "/api/v1/categories",
+    ):
+        response = await client.get(path)
+        assert response.status_code in (401, 403), f"{path} 不该匿名可读：{response.text}"
+
+    # 登录之后三个都能用
+    user = await user_factory(roles=["REQUESTER"])
+    await _login(client, user)
+    for path in (
+        "/api/v1/suppliers",
+        "/api/v1/departments",
+        "/api/v1/categories",
+    ):
+        assert (await client.get(path)).status_code == 200, path
+
+    # `only_active` 不再是客户端能拨的开关：带上它结果必须完全一致
+    plain = (await client.get("/api/v1/departments")).json()
+    probed = (
+        await client.get("/api/v1/departments", params={"only_active": "false"})
+    ).json()
+    assert plain == probed, "only_active 不该还能由调用方指定"

@@ -5,6 +5,7 @@
 """
 
 import uuid
+from collections.abc import Collection
 from typing import Any
 
 from sqlalchemy import select, update
@@ -34,6 +35,37 @@ class UserRepository:
             select(UserRoleRecord.role).where(UserRoleRecord.user_id == user_id)
         )
         return list(roles.all())
+
+    async def find_by_role(
+        self,
+        role: str,
+        *,
+        department_ids: Collection[uuid.UUID] | None = None,
+    ) -> list[UserRecord]:
+        """按角色找**可用**的审批候选人（M6）。
+
+        `department_ids` 给了就限定在这些部门里；不给则是全局。
+
+        ============================ 为什么要区分这两种 ============================
+        `DEPT_MANAGER` / `DEPT_HEAD` 只能审**本部门（含子部门）**的单子 ——
+        不限定的话，A 部门主管能审 B 部门的申请，而这是预算与职责的双重错位；
+        `PROCUREMENT` / `FINANCE` / `GM` 的职责本来就是跨部门，必须全局找。
+
+        条件里带 `active.is_(True)`：冻结的账号不该出现在候选人里 ——
+        给他派任务等于让申请卡在一个不会有人处理的人手上。
+        """
+        statement = (
+            select(UserRecord)
+            .join(UserRoleRecord, UserRoleRecord.user_id == UserRecord.id)
+            .where(UserRoleRecord.role == role, UserRecord.active.is_(True))
+            # 第二排序键不能省：同一事务里建的账号 `created_at` 完全相同
+            # （PostgreSQL 的 now() 是**事务开始时间**），只按时间排会得到不确定的顺序，
+            # 于是"这一级派给谁"在测试里时对时错 —— M6 在事件排序上踩过同一个坑。
+            .order_by(UserRecord.created_at, UserRecord.id)
+        )
+        if department_ids is not None:
+            statement = statement.where(UserRecord.department_id.in_(department_ids))
+        return list((await self.session.scalars(statement)).all())
 
     async def create_user(
         self,

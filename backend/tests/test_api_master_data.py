@@ -11,7 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, text
 from sqlalchemy.exc import IntegrityError
 
@@ -22,11 +22,25 @@ from app.infrastructure.records.catalog import (
     PurchaseCategoryRecord,
     SupplierRecord,
 )
+from app.main import app
+from tests.conftest import UserFactory, login_as
 
 pytestmark = pytest.mark.integration
 
 
 def _code(prefix: str) -> str:
+    """生成测试用的编码。
+
+    ============================ 前缀约定：测试数据一律 T 打头 ============================
+    测试造的部门 / 品类 / 供应商都用 `TDEP-` / `TCAT-` / `TSUP-`。
+
+    这条约定是**用一次事故换来的**：原先测试用 `CAT-`，而种子脚本的演示品类也叫
+    `CAT-OFFICE` / `CAT-IT`。清理开发库里的测试数据时，"按 `CAT-%` 前缀删"
+    把种子品类一起删掉了 —— 前缀撞车时，"测试数据"与"演示数据"在库里无法区分，
+    任何按前缀做的清理都必然误伤。
+
+    新写测试请沿用这个约定：**可辨认、可批量清理、绝不与种子数据重叠**。
+    """
     return f"{prefix}-{uuid.uuid4().hex[:10].upper()}"
 
 
@@ -93,7 +107,7 @@ async def cleanup() -> AsyncIterator[Cleanup]:
 
 async def _create_department(client: AsyncClient, cleanup: Cleanup) -> dict:
     response = await client.post(
-        "/api/v1/admin/departments", json={"name": "行政部", "code": _code("DEP")}
+        "/api/v1/admin/departments", json={"name": "行政部", "code": _code("TDEP")}
     )
     assert response.status_code == 201, response.text
     body = response.json()
@@ -108,7 +122,7 @@ async def _create_category(
         "/api/v1/admin/categories",
         json={
             "name": "办公用品",
-            "code": code or _code("CAT"),
+            "code": code or _code("TCAT"),
             "form_schema": {"type": "object"},
             "approval_policy": policy,
         },
@@ -158,7 +172,7 @@ async def test_unknown_role_is_rejected_by_structure(client: AsyncClient) -> Non
         "/api/v1/admin/categories",
         json={
             "name": "办公用品",
-            "code": _code("CAT"),
+            "code": _code("TCAT"),
             "approval_policy": {
                 "steps": [{"order": 10, "role": "BOSS", "when": {"gte": ["amount_fen", 0]}}]
             },
@@ -182,7 +196,7 @@ async def test_field_typo_amount_is_rejected_with_field_name(
         "/api/v1/admin/categories",
         json={
             "name": "办公用品",
-            "code": _code("CAT"),
+            "code": _code("TCAT"),
             "approval_policy": bad_policy,
         },
     )
@@ -201,7 +215,7 @@ async def test_policy_without_fallback_is_rejected(
         "/api/v1/admin/categories",
         json={
             "name": "办公用品",
-            "code": _code("CAT"),
+            "code": _code("TCAT"),
             "approval_policy": {
                 "steps": [
                     {
@@ -224,7 +238,7 @@ async def test_float_threshold_is_rejected(
         "/api/v1/admin/categories",
         json={
             "name": "办公用品",
-            "code": _code("CAT"),
+            "code": _code("TCAT"),
             "approval_policy": {
                 "steps": [
                     {"order": 10, "role": "DEPT_MANAGER", "when": {"gte": ["amount_fen", 0]}},
@@ -248,7 +262,7 @@ async def test_duplicate_order_is_rejected(
         "/api/v1/admin/categories",
         json={
             "name": "办公用品",
-            "code": _code("CAT"),
+            "code": _code("TCAT"),
             "approval_policy": {
                 "steps": [
                     {"order": 10, "role": "DEPT_MANAGER", "when": {"gte": ["amount_fen", 0]}},
@@ -290,7 +304,7 @@ async def test_update_unknown_category_returns_404(client: AsyncClient) -> None:
 async def test_duplicate_category_code_returns_409(
     client: AsyncClient, cleanup: Cleanup
 ) -> None:
-    code = _code("CAT")
+    code = _code("TCAT")
     await _create_category(client, cleanup, VALID_POLICY, code=code)
     response = await client.post(
         "/api/v1/admin/categories",
@@ -300,6 +314,102 @@ async def test_duplicate_category_code_returns_409(
 
 
 # -------------------------------------------------------------------- 预算
+
+
+async def test_my_budgets_requires_login_and_is_department_scoped(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    """`/api/v1/budgets/mine` 的两处收口（2026-10-03）。
+
+    它原来是 M2 留下的公开接口，而且**部门由调用方指定** —— 两个问题叠加：
+    匿名可读预算金额，且传任意部门 id 就能看别人有多少钱。
+
+    这条同时钉住三件事：
+      1. 匿名 → **401**；
+      2. `department_id` 收掉：传了也不起作用（只认登录态）；
+      3. 有部门的账号看到**本部门**的预算；没部门的账号看到**空列表**。
+
+    ⚠️ 这条用例**自己按顺序清理**（预算 → 账号 → 部门），不用 `cleanup` fixture：
+    那个 fixture 的拆卸顺序**早于** `user_factory`，删部门时会撞上
+    `users.department_id` 的外键（实测踩过）。用例内 `finally` 是严格有序的。
+    """
+    # ① 匿名不可读
+    anonymous = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    blocked = await anonymous.get("/api/v1/budgets/mine")
+    assert blocked.status_code in (401, 403), blocked.text
+    await anonymous.aclose()
+
+    created_department = (
+        await client.post(
+            "/api/v1/admin/departments", json={"name": "预算可见性", "code": _code("TDEP")}
+        )
+    ).json()
+    department_id = uuid.UUID(created_department["id"])
+
+    # 品类 + 该部门的预算（都自己清，不用 cleanup fixture —— 理由见 docstring）
+    created_category = (
+        await client.post(
+            "/api/v1/admin/categories",
+            json={"name": "预算可见性品类", "code": _code("TCAT"), "approval_policy": VALID_POLICY},
+        )
+    ).json()
+    category_id = uuid.UUID(created_category["id"])
+    created_budget = (
+        await client.post(
+            "/api/v1/admin/budgets",
+            json={
+                "department_id": str(department_id),
+                "category_id": str(category_id),
+                "year": 2026,
+                "amount_fen": 500_000,
+            },
+        )
+    ).json()
+    budget_id = uuid.UUID(created_budget["id"])
+
+    try:
+        insider = await user_factory(roles=["REQUESTER"], department_id=department_id)
+        as_insider = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+        await login_as(as_insider, insider)
+
+        mine = await as_insider.get("/api/v1/budgets/mine")
+        assert mine.status_code == 200, mine.text
+        assert any(item["amount_total_fen"] == 500_000 for item in mine.json())
+
+        # 试图用参数窥探别的部门 —— 参数已经不存在，接口只认登录态
+        spoofed = await as_insider.get(
+            "/api/v1/budgets/mine", params={"department_id": str(uuid.uuid4())}
+        )
+        assert spoofed.status_code == 200
+        assert spoofed.json() == mine.json(), "department_id 不该还能由调用方指定"
+        await as_insider.aclose()
+
+        # ③ 没有部门的账号（如系统管理员）→ 空列表，而不是报错
+        outsider = await user_factory(roles=["ADMIN"], department_id=None)
+        as_outsider = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+        await login_as(as_outsider, outsider)
+        empty = await as_outsider.get("/api/v1/budgets/mine")
+        assert empty.status_code == 200
+        assert empty.json() == []
+        await as_outsider.aclose()
+    finally:
+        # 严格顺序：预算 → 品类 → 部门（账号由 user_factory 自己删，它删得比这里晚）
+        async with SessionFactory() as session:
+            await session.execute(delete(BudgetRecord).where(BudgetRecord.id == budget_id))
+            await session.execute(
+                delete(PurchaseCategoryRecord).where(
+                    PurchaseCategoryRecord.id == category_id
+                )
+            )
+            await session.execute(
+                # 部门上可能还挂着测试账号（t- 前缀）→ 先解绑再删，否则撞外键
+                text("UPDATE users SET department_id = NULL WHERE department_id = :d"),
+                {"d": department_id},
+            )
+            await session.execute(
+                delete(DepartmentRecord).where(DepartmentRecord.id == department_id)
+            )
+            await session.commit()
 
 
 async def test_budget_stores_fen_and_rejects_duplicate_scope(
@@ -358,7 +468,7 @@ async def test_budget_with_unknown_department_returns_422(
 async def test_disabled_supplier_disappears_from_public_list(
     client: AsyncClient, cleanup: Cleanup
 ) -> None:
-    code = _code("SUP")
+    code = _code("TSUP")
     created = await client.post(
         "/api/v1/admin/suppliers", json={"name": "待停用供应商", "code": code}
     )
@@ -399,7 +509,7 @@ async def test_supplier_qualification_expiry_is_accepted(
         "/api/v1/admin/suppliers",
         json={
             "name": "有资质的供应商",
-            "code": _code("SUP"),
+            "code": _code("TSUP"),
             "qualification_expires_at": "2027-01-01T00:00:00+08:00",
         },
     )
@@ -413,7 +523,7 @@ async def test_bad_datetime_is_rejected(client: AsyncClient) -> None:
         "/api/v1/admin/suppliers",
         json={
             "name": "时间格式错",
-            "code": _code("SUP"),
+            "code": _code("TSUP"),
             "qualification_expires_at": "2027年1月1日",
         },
     )

@@ -15,11 +15,12 @@ M2 起**创建/停用走 `/api/v1/admin/suppliers`**，公开的 `/api/v1/suppli
 import uuid
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from app.database import SessionFactory
 from app.infrastructure.records.catalog import SupplierRecord
+from app.main import app
 
 pytestmark = pytest.mark.integration
 
@@ -44,6 +45,53 @@ async def client(admin_client: AsyncClient) -> AsyncClient:
     所以统一用管理员客户端。
     """
     return admin_client
+
+
+async def test_list_suppliers_requires_login() -> None:
+    """**2026-10-03 收口**：供应商列表不再是公开接口。
+
+    原先它完全公开（未登录可读供应商名与编码），而"合格供应商清单"是采购/管理职能的资产
+    （内控指引第 7 号第七条："建立科学的供应商评估和准入制度，确定合格供应商清单"，
+    前提是"授予相应的请购权"）。所以改为**要求登录**。
+
+    这里刻意**自带一个匿名客户端**（不用本文件那个 admin 的 `client` fixture）——
+    用后者的话这条用例永远是 200，测不出任何东西。
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as anon:
+        response = await anon.get("/api/v1/suppliers")
+    assert response.status_code in (401, 403), response.text
+
+
+async def test_only_active_parameter_is_gone(client: AsyncClient) -> None:
+    """`only_active` 不再是客户端能拨的开关。
+
+    原先传 `?only_active=false` 就能拿到**已停用**的供应商 —— 最窄的角色不该有
+    "要不要过滤"的决定权（OWASP 最小权限 + 默认拒绝）。
+
+    这条断言的是"这个参数不再有任何提权效果"：带上它，返回的还是合格清单。
+    为了让断言有区分度，先造一个**已停用**的供应商，它不能出现在结果里。
+    """
+    code = _code("TSUP-PARAM")
+    try:
+        created = await client.post(
+            "/api/v1/admin/suppliers", json={"name": "参数化试探供应商", "code": code}
+        )
+        assert created.status_code == 201
+        await client.post(
+            f"/api/v1/admin/suppliers/{created.json()['id']}/disable",
+            json={"reason": "参数收口测试"},
+        )
+
+        plain = await client.get("/api/v1/suppliers")
+        probed = await client.get("/api/v1/suppliers", params={"only_active": "false"})
+        assert plain.status_code == 200 and probed.status_code == 200
+        assert not any(item["code"] == code for item in plain.json())
+        assert not any(item["code"] == code for item in probed.json()), (
+            "带上 only_active=false 仍不该拿到已停用供应商"
+        )
+    finally:
+        await _purge([code])
 
 
 async def test_list_suppliers_returns_list(client: AsyncClient) -> None:
@@ -83,7 +131,7 @@ async def test_create_supplier_persists_to_database(client: AsyncClient) -> None
 
 
 async def test_duplicate_code_returns_conflict(client: AsyncClient) -> None:
-    code = _code("SUP-DUP")
+    code = _code("TSUP-DUP")
     payload = {"name": "重复编码供应商", "code": code}
     try:
         first = await client.post("/api/v1/admin/suppliers", json=payload)
@@ -111,7 +159,7 @@ async def test_invalid_payload_returns_unified_error(client: AsyncClient) -> Non
 
 async def test_inactive_supplier_is_filtered_out(client: AsyncClient) -> None:
     """停用的供应商不出现在默认列表里。"""
-    code = _code("SUP-OFF")
+    code = _code("TSUP-OFF")
     try:
         created = await client.post(
             "/api/v1/admin/suppliers", json={"name": "停用供应商", "code": code}
@@ -141,7 +189,7 @@ async def test_expired_qualification_is_not_selectable(client: AsyncClient) -> N
     公开列表里没有它（选不到），管理列表里还有它（排查得到）。
     只测前者的话，把供应商整个过滤没了也会"通过"。
     """
-    code = _code("SUP-EXP")
+    code = _code("TSUP-EXP")
     try:
         created = await client.post(
             "/api/v1/admin/suppliers",
@@ -168,7 +216,7 @@ async def test_supplier_without_expiry_stays_selectable(client: AsyncClient) -> 
     少了这条用例，把过滤条件写成"必须有未来有效期"也能全绿 ——
     而那会让所有没填有效期的供应商凭空消失。
     """
-    code = _code("SUP-NOEXP")
+    code = _code("TSUP-NOEXP")
     try:
         created = await client.post(
             "/api/v1/admin/suppliers", json={"name": "长期有效供应商", "code": code}

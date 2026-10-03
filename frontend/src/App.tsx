@@ -47,6 +47,11 @@ function Sidebar() {
   const logout = useLogout();
   const navigate = useNavigate();
   const isAdmin = me.data?.roles.includes("ADMIN") ?? false;
+  // 能不能发起采购申请，看**有没有部门**，不看角色：
+  // 部门决定预算归属与审批链，没有它连草稿都建不出来（后端 422 `NO_DEPARTMENT`）。
+  // 判据与路由守卫 `RequireAuth requireDepartment` 必须同源，否则会出现
+  // "菜单里有、点进去被拦"或反过来的错配。
+  const canRequest = me.isSuccess && Boolean(me.data?.department_id);
 
   return (
     <aside className="flex w-full shrink-0 flex-col gap-6 border-line bg-section p-4 md:sticky md:top-0 md:h-screen md:w-60 md:border-r md:p-5">
@@ -66,6 +71,12 @@ function Sidebar() {
             <NavItem to="/" end>
               环境自检
             </NavItem>
+            {/* 「我的申请」只对有部门的账号显示 —— 没有部门的账号**本来也建不出申请**，
+                给他一个点进去只能看空列表、或者被拦下的入口没有意义。 */}
+            {canRequest && <NavItem to="/requests">我的申请</NavItem>}
+            {/* 「我的待办」**所有人都保留**：审批与部门无关，
+                一个人完全可能既是管理员又是 GM（要审大额单）。 */}
+            <NavItem to="/approvals/tasks">我的待办</NavItem>
             <NavItem to="/suppliers">合格供应商</NavItem>
           </>
         )}

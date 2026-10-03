@@ -17,8 +17,10 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
-from app.infrastructure.records import catalog  # noqa: F401  让 autogenerate 看得到
-from app.infrastructure.records import auth as _auth  # noqa: F401  让 autogenerate 看得到
+from app.infrastructure.records import approval as _approval  # noqa: F401  autogenerate
+from app.infrastructure.records import auth as _auth  # noqa: F401  autogenerate
+from app.infrastructure.records import catalog  # noqa: F401  autogenerate
+from app.infrastructure.records import purchase as _purchase  # noqa: F401  autogenerate
 from app.infrastructure.records.base import Base
 
 config = context.config

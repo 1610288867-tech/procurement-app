@@ -1,11 +1,12 @@
-# ER 图与数据模型（第一版 15 张表）
+# ER 图与数据模型（22 张表，按阶段分组）
 
-> M0 产物之一。领域设计第六节共 22 张表，**第一版只画/只建 15 张**：
-> 砍掉知识库那 5 张（M10 才用）和 `budget_transactions`（M7 才用）。
+> M0 产物之一。领域设计第六节共 **22 张业务表**（另有 5 张知识库表属 M11，不在本图内）。
+> **其中 15 张在 M9 之前建完**（M1–M9 建的那批），剩下 7 张是 M10 的履约与结算组
+> （询价 / 订单 / 收货 / 发票 / 付款）。
 >
 > 画图工具用 draw.io 或纸笔都行，**关键是画清楚下面第三节那三条关系链**。
 
-## 一、表清单（15 张，按阶段分组）
+## 一、表清单（22 张，按阶段分组）
 
 | 阶段 | 表 | 一句话说明 |
 | --- | --- | --- |
@@ -21,15 +22,17 @@
 | M5 | `idempotency_records` | 幂等记录（含 `IN_PROGRESS` 占位） |
 | M6 | `approval_flows` | 一次审批实例（含**策略快照**） |
 | M6 | `approval_tasks` | 审批任务（或签/会签） |
-| M8 | `attachments` | 附件（报价单/合同/发票/验收照片） |
-| M9 | `purchase_orders` + `purchase_order_lines` | 采购订单与其明细 |
-| M9 | `quotations` | 供应商报价 |
-| M9 | `goods_receipts` + `goods_receipt_lines` | 收货单与其明细 |
-| M9 | `invoices` / `payments` | 发票 / 付款单 |
+| M7 | `budget_transactions` | 预算流水（`RESERVE / RELEASE / SPEND`，`UNIQUE(request_id, kind)`） |
+| M9 | `attachments` | 附件（报价单/合同/发票/验收照片） |
+| M10 | `purchase_orders` + `purchase_order_lines` | 采购订单与其明细 |
+| M10 | `quotations` | 供应商报价 |
+| M10 | `goods_receipts` + `goods_receipt_lines` | 收货单与其明细 |
+| M10 | `invoices` / `payments` | 发票 / 付款单 |
 | M3+ | `audit_logs` | 审计，**只追加** |
 
-> 表数量按"逻辑表"算是 15 组（把 `*_lines` 与主表算作一组）。
-> 到 M9 全部建完，加上 M7 的 `budget_transactions` 和 M10 的 5 张知识库表，合计 22 张。
+> 计数口径：上表 19 行里，有 3 行各含两张表（订单、收货、发票与付款），所以 **19 + 3 = 22 张**。
+> M9 之前要建的 15 张 = 上表**除 M10 那 4 行以外的 15 行**（含 `budget_transactions` 与 `audit_logs`）；
+> M10 的 7 张单独一组，到那一步再建。M11 的知识库 5 张**不在这 22 张里**。
 
 ## 二、关键字段与取值（写迁移时的依据）
 
@@ -80,18 +83,36 @@ idempotency_records id, actor_id, scope, key, payload_hash,
 
 ```
 approval_flows   id, request_id, status(RUNNING/APPROVED/REJECTED/CANCELLED),
-                 policy_snapshot(JSONB), policy_version, started_at, completed_at
+                 current_step_order, policy_snapshot(JSONB), policy_version,
+                 started_at, completed_at
 approval_tasks   id, flow_id, request_id, step_order, role, mode(SINGLE/ALL), status,
-                 assignee_id, decided_by, decided_at, comment, version, delegated_from
+                 assignee_id, decided_by, decided_at, comment, version
 ```
 
+- **`current_step_order` 不能省**（2026-10-02 补）：它是"这张单子现在走到哪一级"的**唯一事实来源**。
+  一次提交会把审批链上每一级的任务**全部建出来**（这样进度能一眼看全），
+  于是"第 3/4/5 级已建出、但还没轮到"这件事必须有地方表达 —— 就放在这里。
+  建流时设成第一级的 `order`；某一级完成后**用条件更新**推进到下一个还有任务的 `order`。
+  > **推进一定要条件更新**（`WHERE current_step_order = <旧值>`）：两人同时通过同一级的
+  > 两个会签任务时，"先读再写"会把指针推两格、**跳过一整级**，而那一级的审批人
+  > 永远等不到待办，也不会有人发现。
+- **`approval_tasks.status` 是五档，且里面没有"未轮到"**：
+  `PENDING / APPROVED / REJECTED / SKIPPED / CANCELLED`。
+  刻意不加 `WAITING` —— 那样"是否已轮到"会同时存在流与任务两处，两份状态必然漂移。
+  （`SKIPPED` 是另一回事：那是策略变化导致某级被跳过。）
+  > **实现与早期设计的一处出入**（2026-10-03 落实）：设计里还写过第六档 `DELEGATED`
+  > 与 `delegated_from` 列（审批人委托他人代审）。M6 的验收项里没有委托这件事，
+  > 加了就是**写一个没有触发路径的状态**，测试也测不到。所以**先不加**，
+  > 等真正做委托时再一起加状态、列与迁移。
+- **待办查询必须同时筛 `status = 'PENDING'` 与 `step_order = current_step_order`**，
+  否则高级别审批人会提前看到待办，**而且能越级把申请批掉**（越级审批同样要在
+  决定接口的 `WHERE` 里挡住，不能只靠界面不显示按钮）。
 - **`policy_snapshot` 不能省**：存"提交那一刻的 `approval_policy` 原件"。
   没有它，管理员改一次阈值，你就再也说不清历史申请当时为什么只走两级
 - `approval_tasks.request_id` 是**受控冗余**（与 `flow_id` 同时写入），
   专为"待办一次 JOIN 查完"服务——**待办是全系统最频繁的查询**
-- `approval_tasks.status`：`PENDING / APPROVED / REJECTED / SKIPPED / CANCELLED / DELEGATED`
 
-### 履约与结算（M9）
+### 履约与结算（M10）
 
 ```
 quotations            id, request_id, supplier_id, amount, currency, valid_until, status, attachment_id
@@ -106,6 +127,13 @@ audit_logs            id, actor_id, action, entity_type, entity_id, before(JSONB
 
 - `purchase_order_lines.item_id` 是**快照复制**，不是指向申请明细的外键链路——
   **订单一旦生成就是独立凭证**，申请后续不能改它
+- **订单金额口径**（2026-10-02 定死）：
+  `purchase_orders.amount = Σ(purchase_order_lines.amount) = Σ(单价 × 数量)`，
+  由后端按明细重算，不接受客户端传总额。
+  明细行单价的来源按采购方式分：**询价场景取定标报价单价**（通常 ≤ 申请单价，
+  所以订单总额可能小于申请总额）；**直采场景取实际成交单价**（默认等于申请单价，有议价取议价后价）。
+  **订单金额才是"实际要付多少"的基准** —— 三单匹配与预算结转都以它为准，不是以申请金额为准；
+  两者不一致是正常的，差额由"实付小于预留则显式释放"处理
 - `payments` 第一版：`UNIQUE(request_id)`，**一笔申请只允许一笔付款**（不做部分付款）
 - 收货只做**整单收货**，`ORDERED → RECEIVED`，
   **第一版不在状态机里写 `PARTIALLY_RECEIVED`**（留一个走不到的状态会让状态机测试失去意义）
@@ -127,11 +155,15 @@ purchase_requests 1 ──── n purchase_items
 ```
 purchase_requests 1 ──── n approval_flows 1 ──── n approval_tasks
                                     │
-                                    └─ policy_snapshot（这一层是"依据"）
+                                    ├─ policy_snapshot（这一层是"依据"）
+                                    └─ current_step_order（这一层是"现在轮到谁"）
         │
         └─ status 由"审批完成事件"驱动推进：IN_APPROVAL → SOURCING
            ★ 审批模块不直接改主单字段，两层通过事件解耦
 ```
+
+**任务一次全建出来，但只有 `step_order = current_step_order` 的那一级是活的**：
+它出现在待办里、可以被认领与决定；其余各级虽然已经是 `PENDING`，但既不可见也不可操作。
 
 ### 链三：履约链（链式，每一步都以上一步为前置）
 
@@ -170,7 +202,7 @@ suppliers (code)
 
 `approval_tasks (assignee_id, status)` 这个索引很关键——"我的待办"是全系统访问最频繁的查询。
 
-## 五、主单状态机（13 个状态）
+## 五、主单状态机（12 个状态）
 
 ```
 DRAFT ──> IN_APPROVAL ──> SOURCING ──> AWARDED ──> ORDERED ──> RECEIVED
@@ -187,3 +219,8 @@ DRAFT ──> IN_APPROVAL ──> SOURCING ──> AWARDED ──> ORDERED ─�
 2. **`RECEIVED` 之前不允许创建付款单** —— "收货才能付款"靠状态机强制，不靠前端按钮
 
 第一版**不含** `PARTIALLY_RECEIVED`（只做整单收货）。要加的时候按实施计划 5.5 节 E 的四步一起加状态和转移。
+
+> **实现进度（2026-10-03）**：`domain/state_machine.py` 里目前只有 **6 个**状态 ——
+> M5 的 `DRAFT / IN_APPROVAL / DISCARDED / WITHDRAWN` 加 M6 的 `SOURCING / REJECTED`。
+> 上面这张图是**全项目目标形态**，其余状态随 M10 用到时才加：
+> "写完却没有触发路径的状态"会让状态机测试失去意义（你测的那个转移根本走不到）。

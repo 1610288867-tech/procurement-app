@@ -19,6 +19,8 @@ from app.application.ports import (
     SupplierView,
     UnitOfWork,
 )
+from app.domain.approval_engine import check_reachability
+from app.domain.enums import URGENCY_URGENT
 from app.domain.rules import validate_policy
 from app.errors import BusinessError, NotFoundError
 
@@ -139,12 +141,19 @@ class CatalogCoordinator:
 
 
 def _assert_policy_valid(policy: Mapping[str, Any]) -> None:
-    """三层校验的第二层：语义。
+    """三层校验的第二层（语义）+ 第三层（可达性）。
 
-    结构（Pydantic）第一层在边界层；可达性第三层在 M5。
-    这一层不过 = 直接 422，且把具体问题原样写给管理员。
+    结构（Pydantic）第一层在边界层。这一层不过 = 直接 422，且把具体问题原样写给管理员。
+
+    - 第二层 `validate_policy`：路径白名单 / 整数分 / 零阈值兜底 / order 不重复 ——
+      拦的是"规则本身写错"；
+    - 第三层 `check_reachability`（M6 补上）：拿几个代表性金额反推 ——
+      拦的是"规则写得没错、但永远不会生效"，例如某一级的阈值高到任何金额都够不着。
+      这类问题**不会报错、只会静默降低审批层级**，所以必须在这里拦住。
     """
     problems = validate_policy(policy)
+    # 加急件那一级只在 urgency=URGENT 时生效，探测时要带上它，否则会被误判成死步骤
+    problems += check_reachability(policy, urgency=URGENCY_URGENT)
     if problems:
         raise BusinessError(
             "审批策略不合法：" + "；".join(problems),

@@ -14,7 +14,7 @@
 | --- | --- |
 | 按金额动态生成审批链（数据驱动，不是硬编码 if/else） | M6 |
 | 预算的并发预留与释放（条件更新，不是先查再写） | M7 |
-| 三单匹配（订单 / 收货 / 发票对账） | M9 |
+| 三单匹配（订单 / 收货 / 发票对账） | M10 |
 | 幂等、乐观锁、事件流、只追加审计 | M5 起贯穿 |
 
 ## 仓库组成
@@ -23,7 +23,7 @@
 | --- | --- |
 | `backend/` | FastAPI 四层骨架（边界 / 用例 / 领域 / 基础设施）、三个健康检查、pytest 分档、ruff、mypy |
 | `frontend/` | React 18 + Vite + TypeScript + Tailwind v4 + TanStack Query；M0 是环境自检页 |
-| `docs/` | M0 三份设计产物（ER 图、业务规则、金额-审批链对照表）＋ 规划文档五份 |
+| `docs/` | M0 三份设计产物（ER 图、业务规则、金额-审批链对照表）＋ 内控对账一份（采购内控对照）＋ 规划文档五份 |
 | `docker-compose.yml` | 薄封装，用 `include:` 引用仓库外的数据库编排（见下） |
 | `PROGRESS.md` | **阶段验收清单与工作进度**（做完一项勾一项） |
 | `Development progress.md` | **每个阶段结束后的四问总结** |
@@ -33,14 +33,16 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/企业采购审批系统-实施计划.md](docs/企业采购审批系统-实施计划.md) | M0–M11 十二个阶段的详细步骤、验收、常见坑 |
+| [docs/企业采购审批系统-实施计划.md](docs/企业采购审批系统-实施计划.md) | M0–M12 十二个阶段的详细步骤、验收、常见坑 |
 | [docs/企业采购审批系统-领域设计.md](docs/企业采购审批系统-领域设计.md) | 角色、状态机、审批引擎、22 张表、API、核心模块参考实现 |
+| [docs/采购内控对照.md](docs/采购内控对照.md) | **外部依据 ↔ 本项目现状 ↔ 定稿口径**（法规原文、Oracle/OWASP、开源实现对照） |
 | [docs/新项目搭建方案-Windows优先.md](docs/新项目搭建方案-Windows优先.md) | 平台路线与技术栈选型理由 |
 | [docs/AI--main-项目技术清单.md](docs/AI--main-项目技术清单.md) | 参考项目的技术档案 |
 | [docs/AI--main-改造与轻量化方案.md](docs/AI--main-改造与轻量化方案.md) | 参考项目哪些该删、哪些该换 |
 
 M0 的设计产物也在 `docs/`：[ER-图.md](docs/ER-图.md)、[业务规则.md](docs/业务规则.md)、
-[金额-审批链对照表.md](docs/金额-审批链对照表.md)。
+[金额-审批链对照表.md](docs/金额-审批链对照表.md)；
+2026-10-03 做内控对账时补了 [采购内控对照.md](docs/采购内控对照.md)（这张表反过来改了业务规则第 9、10 条）。
 
 ## 代码与容器是分开的
 
@@ -167,7 +169,7 @@ npm run dev
 
 **前端走 Vite 代理，不用 CORS。** 浏览器请求 `/api/...` 与 `/health/...` 由 Vite 转发到 8000，
 浏览器看到的始终是同源。好处是：不需要 CORS 配置、不需要 `credentials: "include"`、
-M3 引入 httpOnly Cookie 时前端一行都不用改、M11 打包时也只需要换掉代理的 target。
+M3 引入 httpOnly Cookie 时前端一行都不用改、M12 打包时也只需要换掉代理的 target。
 
 ## 目录结构
 
@@ -180,38 +182,46 @@ procurement-app/
 │   │   ├── database.py         异步引擎与会话
 │   │   ├── errors.py           统一错误类型与响应体
 │   │   ├── domain/             纯 Python 业务逻辑 —— 禁止 import 任何框架
-│   │   │   ├── rules.py            审批策略的语义校验（M2）
-│   │   │   └── permissions.py      数据级权限：按角色算可见范围（M3）
+│   │   │   ├── rules.py            受限规则 DSL 求值 + 策略语义校验（M2）
+│   │   │   ├── permissions.py      数据级权限：按角色算可见范围（M3）
+│   │   │   ├── approval_engine.py  审批链解析、候选人解析、职责分离纯函数（M6）
+│   │   │   ├── state_machine.py    主单状态迁移表（M5）
+│   │   │   └── enums.py / events.py / purchase.py / org.py
 │   │   ├── application/        用例编排 —— 事务边界在这一层
 │   │   │   ├── ports.py          端口（Protocol，不 import 框架）
-│   │   │   └── coordinators/     一个用例域一个文件（catalog.py / auth.py）
+│   │   │   ├── idempotency.py    幂等占位与重放（M5）
+│   │   │   └── coordinators/     一个用例域一个文件（auth / catalog / purchase / approval）
 │   │   ├── boundaries/         HTTP 边界 —— 只解析 / 校验 / 鉴权
 │   │   │   ├── deps.py           当前用户、角色依赖（M3）
-│   │   │   └── http/             一个分组一个文件（auth.py / catalog.py / admin.py）
+│   │   │   └── http/             一个分组一个文件（auth / catalog / requests / approvals / admin）
 │   │   └── infrastructure/     适配器与组合根 —— 一个聚合一个文件
 │   │       ├── security.py       口令哈希（Argon2id）+ JWT 双令牌（M3）
 │   │       ├── login_throttle.py 登录限流（进程内字典，不引 Redis）
-│   │       ├── records/          ORM 映射（base.py / catalog.py / auth.py）
-│   │       └── repositories/     数据访问（catalog_repo.py / user_repo.py）
-│   ├── migrations/             Alembic（0001 suppliers / 0002 master data / 0003 users）
+│   │       ├── records/          ORM 映射（base / catalog / auth / purchase / approval）
+│   │       └── repositories/     数据访问（catalog / user / purchase / approval / event / idempotency）
+│   ├── migrations/             Alembic（6 个：suppliers → master data → users → budget CHECK → requests → approvals）
 │   ├── tests/                  pytest（unit 默认档 / integration 分档）
 │   ├── scripts/seed.py         演示数据（幂等，可反复跑）
+│   ├── scripts/m6_smoke.py     对着真实服务打 18 项 HTTP 验收（跑完自清理）
+│   ├── scripts/testdata_cleanup.py  清测试前缀数据（`--scope page|all`，`--dry-run` 可选）
 │   ├── pyproject.toml          pytest 分档、ruff、mypy 配置
 │   └── requirements.txt        唯一的依赖事实来源
 ├── frontend/
 │   └── src/
 │       ├── api/client.ts       统一 HTTP 客户端（同源，无 BASE）
-│       ├── api/hooks/          TanStack Query hooks（useCatalog.ts / useAuth.ts）
-│       ├── components/         跨页组件（ui.tsx 界面原语 / RequireAuth.tsx 路由守卫）
+│       ├── api/hooks/          TanStack Query hooks（useCatalog / useAuth / useRequests / useApprovals）
+│       ├── components/         跨页组件（ui.tsx 界面原语 / RequireAuth.tsx 路由守卫 / ApprovalTimeline.tsx 审批链三态时间轴）
 │       ├── lib/money.ts        金额换算的唯一入口（元 ⇄ 分）
-│       ├── pages/              页面（Home / Login / SupplierList / admin 三个管理页）
+│       ├── lib/idempotency.ts  幂等键生成（提交/撤回用）
+│       ├── pages/              页面（Home / Login / SupplierList / requester 三个申请页 / approver 待办与任务详情 / admin 三个管理页）
 │       ├── router.tsx          路由表
 │       ├── index.css           设计令牌（Tailwind v4 @theme，换风格只动这一个文件）
 │       └── App.tsx             外壳：QueryClient + Router + 侧边栏布局
 ├── docs/
-│   ├── ER-图.md                15 张表 + 三条关系约束
-│   ├── 业务规则.md             8 条核心规则
-│   └── 金额-审批链对照表.md    ★ 需求文档 = 测试用例 = 验收标准
+│   ├── ER-图.md                22 张表（M9 之前建 15 张）+ 三条关系约束
+│   ├── 业务规则.md             10 条核心规则（含职责分离与授权失败留痕）
+│   ├── 金额-审批链对照表.md    ★ 需求文档 = 测试用例 = 验收标准
+│   └── 采购内控对照.md         外部依据 ↔ 本项目 ↔ 定稿口径
 ├── docker-compose.yml          薄封装，指向仓库外的数据库编排
 ├── scripts/
 │   ├── dev-up.ps1              一键拉起 Docker 引擎 + 数据库（可带 -WithApi -WithFrontend）
@@ -220,7 +230,8 @@ procurement-app/
 │   ├── run-web.ps1             启动前端（Vite）
 │   ├── seed.ps1                灌入演示数据（部门 / 品类 / 供应商 / 预算 / 账号）
 │   ├── 启动-*.bat 等           上面几个脚本的双击包装（只转发，不重复实现）
-│   └── 浏览器自检.mjs          零依赖：起一个无窗口 Edge，把关键界面真跑一遍
+│   ├── 浏览器自检.mjs          零依赖：起一个无窗口 Edge，把关键界面真跑一遍（11 项）
+│   └── m6-页面实测.mjs         审批链的浏览器实测（19 项，含截图）
 ├── 启动项目.bat                双击一键启动：Docker + 数据库 + 前后端 + 打开浏览器
 ├── 浏览器测试-启动说明.txt     四步启动顺序速查（含常见问题）
 ├── PROGRESS.md                 阶段验收清单与工作进度
@@ -240,7 +251,7 @@ procurement-app/
 
 ## 阶段与进度
 
-计划共 12 个阶段（M0–M11），约 13–14 周（按每周 10–15 小时估算）。
+计划共 13 个阶段（M0–M12），约 15–18 周（按每周 10–15 小时估算）。
 
 | 阶段 | 主题 | 状态 |
 | --- | --- | --- |
@@ -249,22 +260,36 @@ procurement-app/
 | M2 | 主数据（部门 / 品类 / 供应商 / 预算） | ✅ 完成（2026-10-02） |
 | M3 | 账号与权限（多角色 + JWT + 数据级权限） | ✅ 完成（2026-10-02）※ |
 | M4 | 前端设计系统（设计令牌 + 侧边栏外壳 + 共享界面原语） | ✅ 完成（2026-10-02） |
-| M5 | 采购申请（草稿 / 明细 / 提交 / 撤回） | ⬜ |
-| **M6** | **审批引擎**（动态多级审批） | ⬜ ★ 核心 |
+| M5 | 采购申请（草稿 / 明细 / 提交 / 撤回 + 幂等） | ✅ 完成（2026-10-02） |
+| **M6** | **审批引擎**（动态多级审批、规则 6 顺序门控、认领与驳回） | ✅ 完成（2026-10-03）★ |
 | **M7** | **预算并发预留** | ⬜ ★ 核心 |
-| M8 | 附件与时间线 | ⬜ |
-| M9 | 履约链（询价 → 定标 → 订单 → 收货 → 发票 → 付款） | ⬜ |
-| M10 | AI 制度助手 | ⬜ 可不做 |
-| M11 | 桌面壳与移动端 | ⬜ 可不做 |
+| M8 | 回归验收（不含新功能：整体复跑一遍历史验收） | ⬜ |
+| M9 | 附件与时间线 | ⬜ |
+| M10 | 履约链（询价 → 定标 → 订单 → 收货 → 发票 → 付款） | ⬜ |
+| M11 | AI 制度助手 | ⬜ 可不做 |
+| M12 | 桌面壳与移动端 | ⬜ 可不做 |
 
 **每个阶段的验收项见 [PROGRESS.md](PROGRESS.md)，只有全部通过才能进入下一阶段。**
 阶段总结见 [Development progress.md](Development%20progress.md)。
 
-> ※ M3 的 10 条验收里 7 条当场通过；另 3 条（换 id 取别人的申请 → 404、
-> `PROCUREMENT` 跨部门可见性、GM 待办）要等 `purchase_requests` 表建出来才能真跑，
-> 已明确记在 [PROGRESS.md](PROGRESS.md) 里，**没有当作通过**。
+> 采购申请（M5）的入口：登录后侧边栏「我的申请」→ 新建申请 / 继续编辑 / 提交 / 撤回。
+> 草稿阶段金额会随明细实时重算；提交后进入 `IN_APPROVAL`，时间线按顺序记录事件。
+>
+> 审批（M6）的入口：侧边栏「我的待办」——**只显示现在轮到您的审批**。
+> 一次提交会把审批链上每一级的任务都建出来（进度能一眼看全），
+> 但"轮到谁"由 `approval_flows.current_step_order` 说了算：前面几级没批完，
+> 后面几级的审批人**看不到**待办，直接调接口也会被 403 挡住。
+> 演示用 `dept-manager`（李主管）登录；或签任务要先「认领」才出现「通过 / 驳回」。
+>
+> **M6 收尾后又补了两类修复**（2026-10-03，内控对账时发现）：① **自审自批**改成立体三层拦截；
+> ② **主数据接口**（供应商 / 部门 / 品类 / 预算）从匿名可读改为**一律要求登录**。
+> 依据与逐条对账见 [docs/采购内控对照.md](docs/采购内控对照.md)，缺口清单见 [PROGRESS.md](PROGRESS.md)。
 
-## 业务规则（M0 定稿，8 条）
+> ※ M3 的 10 条验收里 7 条当场通过；另 3 条（换 id 取别人的申请 → 404、
+> `PROCUREMENT` 跨部门可见性、GM 待办）当时没有 `purchase_requests` 表，**没有当作通过**。
+> 这三条已在 M5/M6 补齐（见 [PROGRESS.md](PROGRESS.md) 的 M5、M6 两节）。
+
+## 业务规则（M0 定稿 8 条，2026-10-03 补至 10 条）
 
 1. **预算**提交时预留，驳回/撤回时释放，付款时按**实付**转已花并**显式释放差额**
 2. **按金额分级审批**，规则存在品类上，**改规则不改代码**
@@ -274,8 +299,13 @@ procurement-app/
 6. **三单匹配**：超收 / 金额超容差 / 供应商不一致 → 拒绝付款并列出具体问题
 7. **收货完成后才能付款**（状态机强制，不靠前端按钮）
 8. 金额一律**整数「分」**，禁止 float
+9. **职责分离（SoD）**：**提交人不得审批自己的申请**（建链剔除 / 待办过滤 / 决定接口三层拦截）；
+   另四条不相容岗位的取舍与豁免见第 3、7 条
+10. **授权失败要留痕**：越权、越级、无权操作记**安全审计事件**，且**不得混进申请人的时间线**
 
-完整定义见 [docs/业务规则.md](docs/业务规则.md)。
+完整定义见 [docs/业务规则.md](docs/业务规则.md)。第 9、10 条是 2026-10-03 内控对账后补入的
+（依据见 [docs/采购内控对照.md](docs/采购内控对照.md)）——**设计时漏了"谁不能做什么"整整一类要求**，
+实跑才发现申请人能批掉自己的申请。
 
 ### 金额 → 审批链（M6 的验收基准）
 
@@ -289,7 +319,7 @@ procurement-app/
 这四行同时是需求、测试用例和验收标准，详见
 [docs/金额-审批链对照表.md](docs/金额-审批链对照表.md)。
 
-## 权限矩阵（M3）
+## 权限矩阵（M3 起，2026-10-03 收口）
 
 两套权限是**分开**的，缺一不可：
 
@@ -305,14 +335,22 @@ procurement-app/
 | `PROCUREMENT` / `FINANCE` / `RECEIVER` / `GM` | **跨部门看全公司**（职责要求） | 询价、付款、收货、大额审批 |
 | `ADMIN` | 全部（含配置） | 品类与审批规则、供应商准入、账号 |
 
-接口级权限（当前已生效的部分）：
+接口级权限（2026-10-03 收口后的实际状态）：
 
 | 接口组 | 谁能用 |
 | --- | --- |
-| `GET /health/*`、`GET /api/v1/suppliers`、`GET /api/v1/departments`、`GET /api/v1/categories` | 任何人（公开只读） |
+| `GET /health/*` | 任何人（公开，排查用） |
 | `POST /api/v1/auth/login` | 任何人 |
-| `POST /api/v1/auth/refresh`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me` | 登录用户 |
+| `GET /api/v1/suppliers`、`/departments`、`/categories`、`/categories/{id}`、`/budgets/mine` | **登录用户**（只读；`/budgets/mine` 的部门只从登录态推导，没有部门的账号返回空列表） |
+| `POST /api/v1/auth/refresh`、`/logout`、`GET /me` | 登录用户 |
+| `/api/v1/requests/*`、`/api/v1/approvals/*` | 登录用户（**创建与提交申请还要求账号有部门**；具体行是否可见由数据级权限决定：范围外 404、可见但无权 403） |
 | `/api/v1/admin/*` | 仅 `ADMIN` |
+
+> **主数据接口也要求登录**是 2026-10-03 的改动：它们原来匿名可读，其中
+> `/api/v1/categories/{id}` 还会把**整份审批策略**（金额阈值 + 各级角色）带出来。
+> `only_active` 这类"要不要过滤"的开关也一并从客户端参数里收掉了——
+> 过滤条件写死，要看全部走 `/api/v1/admin/*`。口径表见
+> [docs/业务规则.md](docs/业务规则.md) 第 4 条。
 
 演示账号（`scripts/seed.ps1` 生成，**8 个角色 / 7 个人**，`GM` 由 `ADMIN` 兼任）：
 
@@ -330,20 +368,23 @@ procurement-app/
 
 ## 主要 API
 
-M3 已完成认证与权限；其余业务接口按阶段逐个补齐。
+M6 已完成审批引擎；其余业务接口按阶段逐个补齐。
 
 | 分组 | 说明 | 认证 | 状态 |
 | --- | --- | --- | --- |
 | `GET /health/live`、`/health/ready`、`/health/db` | 存活 / 就绪 / 数据库版本 | 否 | ✅ M0 |
-| `GET /api/v1/suppliers` | 合格供应商（只读，不含已停用） | 否 | ✅ M1 |
-| `GET /api/v1/departments`、`/api/v1/categories`、`/api/v1/budgets/mine` | 主数据（只读；`/budgets/mine` 现由调用方带 `department_id`） | 否 | ✅ M2 |
+| `GET /api/v1/suppliers` | 合格供应商（只读；过滤写死，不含停用与资质过期） | **登录** | ✅ M1（2026-10-03 收口） |
+| `GET /api/v1/departments`、`/api/v1/categories`、`/api/v1/categories/{id}`、`/api/v1/budgets/mine` | 主数据（只读；第三个含审批策略，第四个的部门只从登录态推导） | **登录** | ✅ M2（2026-10-03 收口） |
 | `/api/v1/admin/departments`、`/categories`、`/suppliers`、`/budgets` | 主数据写入与配置 | **`ADMIN`** | ✅ M3 |
 | `POST /api/v1/auth/login` | 登录（下发 httpOnly Cookie） | 否 | ✅ M3 |
 | `POST /api/v1/auth/refresh`、`/logout`、`GET /me` | 刷新、登出、当前账号 | 登录 | ✅ M3 |
-| `/api/v1/requests/*` | 采购申请（草稿、明细、提交、撤回、时间线） | 群众 | M5 |
-| `/api/v1/approvals/tasks/*` | 待办、认领、通过、驳回 | 审批角色 | M6 |
-| `/api/v1/sourcing/*`、`/orders/*`、`/receipts/*`、`/payments/*` | 询价、定标、订单、收货、付款 | 按角色 | M9 |
-| `/api/v1/chat/*` | 制度问答（流式） | 登录 | M10 |
+| `/api/v1/requests/*` | 采购申请：建草稿 / 列表 / 详情 / 改草稿 / 存明细 / 提交 / 撤回 / 丢弃 / 时间线 | 登录 + 有部门 | ✅ M5 |
+| `GET /api/v1/approvals/tasks`、`/tasks/{id}` | 我的待办、任务详情（只含**当前级**，且**不含自己提的单**） | 登录 | ✅ M6 |
+| `POST /api/v1/approvals/tasks/{id}/claim`、`/approve`、`/reject` | 认领（或签）、通过、驳回 | 登录 + 是当前级候选人 | ✅ M6 |
+| `GET /api/v1/approvals/requests/{id}/flow` | 审批链进度（谁已批、现在轮到谁） | 登录 + 数据可见 | ✅ M6 |
+| `POST /api/v1/approvals/tasks/{id}/delegate` | 委托他人 | — | ❌ 不做（2026-10-03 定稿，见业务规则第 9 条） |
+| `/api/v1/sourcing/*`、`/orders/*`、`/receipts/*`、`/payments/*` | 询价、定标、订单、收货、付款 | 按角色 | ⬜ M10 |
+| `/api/v1/chat/*` | 制度问答（流式） | 登录 | ⬜ M11 |
 
 认证用 **JWT 双令牌放 httpOnly Cookie**（access 15 分钟 / refresh 7 天，
 refresh 的 `Path` 限定到 `/api/v1/auth/refresh`）；登录连续失败 5 次返回 **429**。
@@ -423,10 +464,20 @@ Select-String -Path backend\app\infrastructure\repositories\*.py -Pattern "\.com
 | Vite 代理 → 后端 | ✅ `/health/ready` 经 5173 返回 `database: up` |
 | `pytest`（M3 收尾） | ✅ 88 passed（unit 50 + integration 38） |
 | `pytest`（M4 收尾） | ✅ **91 passed**（unit 50 + integration 41，含 CHECK 约束与资质过期过滤的新用例） |
-| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 234.44 KB（gzip 74.81） |
+| `pytest`（M5 收尾） | ✅ **148 passed**（unit 90 + integration 58，含并发同键提交与数据级权限） |
+| `pytest`（M6 收尾） | ✅ **187 passed**（unit 110 + integration 77，含会签/或签、越级 403、并发推进指针、策略可达性） |
+| `pytest`（M6 之后的内控修复） | ✅ **198 passed**（+11 条：SoD 纯函数 5 + 集成 5、主数据接口收口 1；见 PROGRESS.md「待修：内控缺口」） |
+| `scripts\m6_smoke.py`（对着真实服务打 HTTP） | ✅ **18/18**（四档金额对照表、越级 403、驳回、SOURCING、缺人 422、跑完自清理） |
+| `node scripts\m6-页面实测.mjs`（浏览器实测） | ✅ **19/19**（待办列表、任务详情、认领→通过、时间轴三态，含截图） |
+| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 267.72 KB（gzip 82.90） |
 | `node scripts\浏览器自检.mjs`（无窗口 Edge + CDP） | ✅ 11 项全过（含"侧边栏角色与 `/auth/me` 一致"） |
-| `ruff` / `mypy` | ✅ All checks passed / 29 files, no issues |
+| `ruff` / `mypy` | ✅ All checks passed / 46 files, no issues |
 | 三条分层自查 | ✅ 全部无输出 |
+
+> 上面的数字是**实跑记录**（最近一次：2026-10-03，全量 `pytest -m ""` → 198 passed in 41.51s）。
+> 测试脚本会往开发库写带前缀的数据，跑完用
+> `cd backend; .venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all` 清掉
+> （`--dry-run` 可以先看要删什么）。
 
 ## 停止与数据
 
@@ -460,7 +511,7 @@ docker compose stop        # 停止但保留数据
 | Docker Desktop 未设开机自启（**刻意**） | 每次开工要手动启动引擎；引擎起来后容器会自动重启 |
 | `docker-compose.yml` 依赖目录布局 | `include:` 用相对路径 `../develop/procurement/`，要求代码仓库与基础设施目录同级；否则需改一行 |
 | 受限沙箱会话访问不了 Docker 命名管道 | 属环境限制，非故障；本机终端正常 |
-| M10 / M11 可永久不做 | AI 助手与桌面壳都是加分项，不影响主干学习目标 |
+| M11 / M12 可永久不做 | AI 助手与桌面壳都是加分项，不影响主干学习目标 |
 
 ## 参考项目
 

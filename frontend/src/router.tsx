@@ -15,6 +15,11 @@ import RequireAuth from "./components/RequireAuth";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import SupplierList from "./pages/SupplierList";
+import TaskDetail from "./pages/approver/TaskDetail";
+import TaskList from "./pages/approver/TaskList";
+import RequestDetail from "./pages/requester/RequestDetail";
+import RequestList from "./pages/requester/RequestList";
+import RequestNew from "./pages/requester/RequestNew";
 import AdminBudgets from "./pages/admin/Budgets";
 import AdminCategories from "./pages/admin/Categories";
 import AdminSuppliers from "./pages/admin/Suppliers";
@@ -30,6 +35,54 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <SupplierList />
+          </RequireAuth>
+        }
+      />
+
+      {/* 采购申请（M5）：不限角色，但**要求账号有归属部门**。
+          没有部门的账号（例如系统管理员）发起不了申请 —— 部门决定预算与审批链。
+          这一层只是"别让人白填一整张表"，真正的边界仍是后端那条 422 `NO_DEPARTMENT`。 */}
+      <Route
+        path="/requests"
+        element={
+          <RequireAuth requireDepartment>
+            <RequestList />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/requests/new"
+        element={
+          <RequireAuth requireDepartment>
+            <RequestNew />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/requests/:id"
+        element={
+          <RequireAuth requireDepartment>
+            <RequestDetail />
+          </RequireAuth>
+        }
+      />
+
+      {/* 审批（M6）：不限角色，登录即可 ——
+          「我的待办」对谁都是空的还是满的，由**后端按当前级过滤**决定，
+          前端不预先按角色判断（那样只会把"该不该看到"讲成两套规则）。 */}
+      <Route
+        path="/approvals/tasks"
+        element={
+          <RequireAuth>
+            <TaskList />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/approvals/tasks/:id"
+        element={
+          <RequireAuth>
+            <TaskDetail />
           </RequireAuth>
         }
       />

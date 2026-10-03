@@ -11,9 +11,11 @@
 构造函数变长，并没有换来实际的可替换性。
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol
+
+from app.domain.permissions import RequestScope
 
 
 class SupplierView(Protocol):
@@ -151,3 +153,245 @@ class UserRepositoryPort(Protocol):
     async def add_role(self, *, user_id: Any, role: str) -> None: ...
 
     async def freeze(self, user_id: Any) -> bool: ...
+
+
+# ---------------------------------------------------------------- 采购申请（M5）
+
+
+class PurchaseItemView(Protocol):
+    id: Any
+    request_id: Any
+    line_no: int
+    name: str
+    spec: str | None
+    quantity: int
+    unit_price: int
+    amount: int
+
+
+class PurchaseRequestView(Protocol):
+    id: Any
+    code: str
+    requester_id: Any
+    department_id: Any
+    category_id: Any
+    title: str
+    reason: str | None
+    amount_total: int
+    urgency: str
+    status: str
+    version: int
+    form_data: dict
+    created_at: datetime
+    updated_at: datetime
+    submitted_at: datetime | None
+    closed_at: datetime | None
+
+
+class RequestEventView(Protocol):
+    id: Any
+    request_id: Any
+    event_type: str
+    from_status: str | None
+    to_status: str | None
+    actor_id: Any
+    payload: dict
+    created_at: datetime
+
+
+class PurchaseRepositoryPort(Protocol):
+    # ---- 主单 ----
+    async def create_request(
+        self,
+        *,
+        requester_id: Any,
+        department_id: Any,
+        category_id: Any,
+        title: str,
+        reason: str | None,
+        urgency: str,
+        form_data: Mapping[str, Any],
+    ) -> PurchaseRequestView: ...
+
+    async def get_request(
+        self, request_id: Any, *, scope: RequestScope, actor_id: Any
+    ) -> PurchaseRequestView | None: ...
+
+    async def list_requests(
+        self,
+        *,
+        scope: RequestScope,
+        actor_id: Any,
+        status: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[Sequence[PurchaseRequestView], int]: ...
+
+    async def apply_draft_patch(
+        self,
+        *,
+        request_id: Any,
+        expected_version: int,
+        changes: Mapping[str, Any],
+    ) -> bool: ...
+
+    async def transition_status(
+        self,
+        *,
+        request_id: Any,
+        expected_version: int,
+        from_status: str,
+        to_status: str,
+        extra: Mapping[str, Any] | None = None,
+    ) -> bool: ...
+
+    # ---- 明细 ----
+    async def list_items(self, request_id: Any) -> Sequence[PurchaseItemView]: ...
+
+    async def replace_items(
+        self, *, request_id: Any, expected_version: int, lines: Sequence[Any]
+    ) -> bool: ...
+
+
+class RequestEventRepositoryPort(Protocol):
+    """事件流。**只有 append 与读取** —— 接口上没有改和删，
+    因为"事件只追加"这件事不该靠自觉。"""
+
+    async def append(
+        self,
+        *,
+        request_id: Any,
+        event_type: str,
+        actor_id: Any,
+        from_status: str | None = None,
+        to_status: str | None = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> RequestEventView: ...
+
+    async def list_for_request(self, request_id: Any) -> Sequence[RequestEventView]: ...
+
+
+# ---------------------------------------------------------------- 审批（M6）
+
+
+class ApprovalFlowView(Protocol):
+    id: Any
+    request_id: Any
+    status: str
+    current_step_order: int
+    policy_snapshot: dict
+    policy_version: int
+    started_at: datetime
+    completed_at: datetime | None
+
+
+class ApprovalTaskView(Protocol):
+    id: Any
+    flow_id: Any
+    request_id: Any
+    step_order: int
+    role: str
+    mode: str
+    status: str
+    assignee_id: Any
+    decided_by: Any
+    decided_at: datetime | None
+    comment: str | None
+    version: int
+    created_at: datetime
+
+
+class ApprovalRepositoryPort(Protocol):
+    async def create_flow(
+        self,
+        *,
+        request_id: Any,
+        current_step_order: int,
+        policy_snapshot: dict,
+        policy_version: int,
+    ) -> ApprovalFlowView: ...
+
+    async def add_tasks(
+        self,
+        *,
+        flow_id: Any,
+        request_id: Any,
+        tasks: Iterable[Any],
+    ) -> Sequence[ApprovalTaskView]: ...
+
+    async def get_flow(self, request_id: Any) -> ApprovalFlowView | None: ...
+
+    async def get_task(self, task_id: Any) -> ApprovalTaskView | None: ...
+
+    async def list_tasks(
+        self, *, flow_id: Any | None = None, request_id: Any | None = None
+    ) -> Sequence[ApprovalTaskView]: ...
+
+    async def step_tasks(
+        self, *, flow_id: Any, step_order: int
+    ) -> Sequence[ApprovalTaskView]: ...
+
+    async def step_statuses(
+        self, *, flow_id: Any, step_order: int | None = None
+    ) -> Sequence[tuple[int, str]]: ...
+
+    async def list_todo(
+        self,
+        *,
+        actor_id: Any,
+        my_roles: Sequence[str],
+        limit: int,
+        offset: int,
+    ) -> tuple[
+        Sequence[tuple[ApprovalTaskView, PurchaseRequestView, CategoryView]], int
+    ]: ...
+
+    async def decide(
+        self,
+        *,
+        task_id: Any,
+        expected_version: int,
+        current_step_order: int,
+        status: str,
+        actor_id: Any,
+        comment: str | None,
+        request_id: Any | None = None,
+    ) -> bool: ...
+
+    async def claim(
+        self,
+        *,
+        task_id: Any,
+        actor_id: Any,
+        expected_version: int,
+        current_step_order: int,
+        request_id: Any | None = None,
+    ) -> bool: ...
+
+    async def advance_step(
+        self, *, flow_id: Any, expected_step_order: int, next_step_order: int
+    ) -> bool: ...
+
+    async def flow_step_order(self, flow_id: Any) -> int | None: ...
+
+    async def lock_flow_for_update(self, flow_id: Any) -> int | None: ...
+
+    async def complete_flow(
+        self, *, flow_id: Any, status: str, expected_step_order: int
+    ) -> bool: ...
+
+    async def cancel_pending_tasks(
+        self, *, flow_id: Any, except_task_id: Any | None = None
+    ) -> int: ...
+
+
+class UserDirectoryPort(Protocol):
+    """按角色找审批候选人（M6）。
+
+    单独一个端口而不是塞进 `UserRepositoryPort`：它的用途是"给审批链找人"，
+    与认证那套（找账号、验口令、冻结）不是同一个关注点。
+    """
+
+    async def find_by_role(
+        self, role: str, *, department_ids: Collection[Any] | None = None
+    ) -> Sequence[UserView]: ...

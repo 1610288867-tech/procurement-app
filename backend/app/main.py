@@ -25,7 +25,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.boundaries.http import admin, auth, catalog
+from app.boundaries.http import admin, approvals, auth, catalog
+from app.boundaries.http import requests as requests_api
 from app.config import get_settings
 from app.database import SessionFactory
 from app.errors import BusinessError
@@ -212,4 +213,6 @@ async def db_version() -> dict[str, str]:
 # M1 起逐个挂上；每个分组一个文件，见 app/boundaries/http/
 app.include_router(auth.router)
 app.include_router(catalog.router)
+app.include_router(requests_api.router)
+app.include_router(approvals.router)
 app.include_router(admin.router)

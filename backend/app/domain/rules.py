@@ -1,4 +1,4 @@
-"""受限规则 DSL —— 词表、遍历与**语义校验**（M2）。求值在 M5。
+"""受限规则 DSL —— 词表、求值与**语义校验**（M2 校验 / M6 求值）。
 
 这一层是纯 Python，**不 import 任何框架**。
 
@@ -13,7 +13,7 @@
     2. 阈值是浮点（金额一律整数「分」）
     3. 没有零阈值兜底步骤（某些金额区间会算出空审批链 = 无人审批）
 
-第三层"每个步骤都可达"要用引擎反推，属于 M5。
+第三层"每个步骤都可达"要用引擎反推，在 `approval_engine.check_reachability`（M6）。
 """
 
 from __future__ import annotations
@@ -122,6 +122,88 @@ def is_zero_amount_fallback(rule: Any) -> bool:
         and not isinstance(threshold, bool)
         and threshold <= 0
     )
+
+
+def read_path(data: Mapping[str, Any], path: str) -> tuple[bool, Any]:
+    """按点路径取值，返回 `(是否存在, 值)`。**不抛异常** —— 缺路径就是不存在。
+
+    为什么用返回值而不是抛 `KeyError`：业务上"字段没填"就是"这个条件不满足"，
+    不是错误。抛异常会逼着每个调用点写 try/except，而漏写一处就是 500。
+    """
+    current: Any = data
+    for part in path.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def evaluate(rule: Any, context: Mapping[str, Any]) -> bool:
+    """求值一个受限规则。**不求值字符串，不执行任何代码。**
+
+    ============================ 三条语义约定 ============================
+    1. **每个对象只能有一个操作符** —— 多个操作符会让"谁先算"变成隐式规则；
+    2. **缺字段返回 False（不满足）**，不抛异常、不做猜测 ——
+       这正是 `{"gte": ["amount", …]}`（漏了 `_fen`）会**静默失效**的原因：
+       申请会以更低的层级被批准，而且不报任何错。所以路径白名单必须在**保存策略时**
+       就拦住（见 `validate_policy`），不能指望运行期发现；
+    3. **永远不 eval** —— 这是"受限"二字的全部意义。
+    """
+    if not isinstance(rule, Mapping) or len(rule) != 1:
+        raise RuleError("每个规则对象必须且只能包含一个操作符")
+
+    operator, operand = next(iter(rule.items()))
+    if operator not in OPERATORS:
+        raise RuleError(f"不支持的操作符：{operator}")
+
+    if operator == "all":
+        if not isinstance(operand, (list, tuple)) or not operand:
+            raise RuleError("all 需要一个非空数组")
+        return all(evaluate(item, context) for item in operand)
+    if operator == "any":
+        if not isinstance(operand, (list, tuple)) or not operand:
+            raise RuleError("any 需要一个非空数组")
+        return any(evaluate(item, context) for item in operand)
+    if operator == "not":
+        return not evaluate(operand, context)
+
+    if not isinstance(operand, (list, tuple)) or not operand:
+        raise RuleError(f"{operator} 需要一个非空数组")
+    path = operand[0]
+    if not isinstance(path, str) or not path:
+        raise RuleError(f"{operator} 的第一个元素必须是字段路径字符串")
+
+    exists, value = read_path(context, path)
+
+    if operator == "exists":
+        return exists
+    if not exists:
+        return False  # 缺字段一律判为不满足，不做猜测
+
+    expected = operand[1] if len(operand) > 1 else None
+    if operator == "eq":
+        return bool(value == expected)
+    if operator == "ne":
+        return bool(value != expected)
+    if operator == "in":
+        if not isinstance(expected, (list, tuple)):
+            raise RuleError("in 的第二个元素必须是一个数组")
+        return value in expected
+    if operator in NUMERIC_OPERATORS:
+        # 比较前先挡掉"拿字符串跟数字比"这类静默错误：Python 会抛 TypeError，
+        # 那会变成 500；统一转成 RuleError，由调用方按 422 处理。
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise RuleError(f"字段 {path!r} 不是数字，不能做大小比较")
+        if not isinstance(expected, (int, float)) or isinstance(expected, bool):
+            raise RuleError(f"{operator} 的阈值必须是数字")
+        if operator == "lt":
+            return value < expected
+        if operator == "lte":
+            return value <= expected
+        if operator == "gt":
+            return value > expected
+        return value >= expected
+    raise RuleError(f"未实现的操作符：{operator}")  # pragma: no cover - 上面已穷举
 
 
 def validate_policy(policy: Mapping[str, Any]) -> list[str]:

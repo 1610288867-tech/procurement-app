@@ -36,6 +36,11 @@ export function useAdminCategories() {
   return useQuery({ queryKey: ADMIN_CATEGORIES, queryFn: api.adminListCategories });
 }
 
+/** 公开的品类列表（只含启用的）。申请人在选品类时用它。 */
+export function useCategories() {
+  return useQuery({ queryKey: CATEGORIES, queryFn: api.listCategories });
+}
+
 export function useBudgets() {
   return useQuery({ queryKey: BUDGETS, queryFn: api.adminListBudgets });
 }

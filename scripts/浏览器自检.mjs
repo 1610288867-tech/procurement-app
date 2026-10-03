@@ -323,11 +323,13 @@ async function main() {
     await waitFor(page, "location.pathname === '/'", "requester 登录成功");
     const rqSidebar = await page.evaluate(sidebarTextExpr);
     const rqMenu = await page.evaluate(menuItemsExpr);
-    check("B1 requester 侧边栏没有管理员菜单，只剩两项",
+    // 4 项 = 环境自检 / 我的申请 / 我的待办 / 合格供应商
+    //（M5 加了「我的申请」，M6 加了「我的待办」—— 它不限角色，登录即可见）。
+    // 断言写成"恰好这几项"，而不是"数量等于 4"：数量对不上时，
+    // 报错信息里能直接看出多了或少了哪一项。
+    check("B1 requester 侧边栏没有管理员菜单，只剩普通员工的几项",
       rqSidebar.includes("张申请") && rqSidebar.includes("REQUESTER")
-      && rqMenu.length === 2
-      && rqMenu.indexOf("采购品类") < 0 && rqMenu.indexOf("预算") < 0
-      && rqMenu.indexOf("供应商管理") < 0,
+      && rqMenu.join("/") === "环境自检/我的申请/我的待办/合格供应商",
       "菜单=" + rqMenu.join("/"));
 
     await page.send("Page.navigate", { url: APP + "/admin/categories" });
@@ -373,6 +375,16 @@ async function main() {
 
   const failed = results.filter((ok) => !ok).length;
   console.log("\n共 " + results.length + " 项，失败 " + failed + " 项");
+
+  // 本脚本会建 1 个品类（SELFCHECK-*）与 1 条配套预算，而这两样都**没有删除端点**
+  // （删数据属于运维动作）。清理统一走一个脚本，与页面实测共用：
+  //     cd backend; .venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all
+  console.log(
+    "\n提示：本次自检建了 1 个品类（" + CAT_CODE + "）与 1 条配套预算。"
+    + "\n      清理（连页面实测的一起）：cd backend; "
+    + ".venv\\Scripts\\python.exe scripts\\testdata_cleanup.py --scope all",
+  );
+
   return failed === 0 ? 0 : 1;
 }
 

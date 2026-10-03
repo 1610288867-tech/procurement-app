@@ -189,6 +189,36 @@ export function StatusBadge({ active }: { active: boolean }) {
   );
 }
 
+/** 采购申请状态的中文名与配色（M5 建，M6 补两个）。
+ *
+ * 六种状态用六种观感，但只从既有语义色里取：草稿中性、审批中偏提示、
+ * 撤回/丢弃是终态但不代表出错（所以用中性灰而不是红色）。
+ * **红色只留给"被驳回"**（M6）—— 那才是需要人立刻处理的；
+ * `SOURCING`（审批通过、进入询价）用成功色，它是这条申请第一次"往前走"。
+ */
+const REQUEST_STATUS_STYLE: Record<string, { label: string; className: string }> = {
+  DRAFT: { label: "草稿", className: "bg-section text-muted" },
+  IN_APPROVAL: { label: "审批中", className: "bg-warning-bg text-warning" },
+  SOURCING: { label: "询价中", className: "bg-success-bg text-success" },
+  REJECTED: { label: "已驳回", className: "bg-danger-bg text-danger" },
+  WITHDRAWN: { label: "已撤回", className: "bg-section text-faint" },
+  DISCARDED: { label: "已丢弃", className: "bg-section text-faint" },
+};
+
+export function RequestStatusBadge({ status }: { status: string }) {
+  const style = REQUEST_STATUS_STYLE[status];
+  return (
+    <span
+      className={
+        "rounded-sm px-2 py-0.5 text-xs " +
+        (style?.className ?? "bg-section text-muted")
+      }
+    >
+      {style?.label ?? status}
+    </span>
+  );
+}
+
 // ------------------------------------------------------------------ 表格
 
 export function Table({
@@ -239,4 +269,33 @@ export function Cell({
   className?: string;
 }) {
   return <td className={`py-2 pr-4 text-body ${className}`}>{children}</td>;
+}
+
+// ------------------------------------------------------------------ 审批（M6）
+
+/** 审批任务状态 → 中文与配色。
+ *
+ * 词表里**没有"还没轮到"**：那件事由审批流的 `current_step_order` 表达，
+ * 界面上显示成时间轴的"未开始 ○"是算出来的（见 `ApprovalTimeline`）。
+ */
+const TASK_STATUS_STYLE: Record<string, { label: string; className: string }> = {
+  PENDING: { label: "待处理", className: "bg-warning-bg text-warning" },
+  APPROVED: { label: "已通过", className: "bg-success-bg text-success" },
+  REJECTED: { label: "已驳回", className: "bg-danger-bg text-danger" },
+  SKIPPED: { label: "已跳过", className: "bg-section text-faint" },
+  CANCELLED: { label: "已取消", className: "bg-section text-faint" },
+};
+
+export function TaskStatusBadge({ status }: { status: string }) {
+  const style = TASK_STATUS_STYLE[status];
+  return (
+    <span
+      className={
+        "rounded-sm px-2 py-0.5 text-xs " +
+        (style?.className ?? "bg-section text-muted")
+      }
+    >
+      {style?.label ?? status}
+    </span>
+  );
 }
