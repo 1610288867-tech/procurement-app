@@ -7,6 +7,7 @@
     auth.py       账号与角色（M3）
     purchase.py   采购申请 / 明细 / 事件流 / 幂等记录（M5）
     approval.py   审批流 / 审批任务（M6）
+    attachment.py 附件（M9）
 
 新模型必须让 `migrations/env.py` 能 import 到，否则 Alembic autogenerate
 看不到它，会生成一个空迁移。

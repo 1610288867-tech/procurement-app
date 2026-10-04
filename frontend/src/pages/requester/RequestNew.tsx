@@ -190,6 +190,11 @@ export default function RequestNew() {
       <PageHeader
         title="新建采购申请"
         description="先选品类（决定要填哪些字段），再填明细。保存后是草稿，确认无误再提交。"
+        breadcrumb={[
+          { label: "首页", to: "/" },
+          { label: "我的申请", to: "/requests" },
+          { label: "新建申请" },
+        ]}
       />
 
       <Card>

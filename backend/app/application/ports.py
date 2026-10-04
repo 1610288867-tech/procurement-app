@@ -201,6 +201,64 @@ class RequestEventView(Protocol):
     created_at: datetime
 
 
+class AttachmentView(Protocol):
+    """附件（M9）。
+
+    `storage_key` 与 `original_filename` **必须分开**：
+    前者是服务端生成的落地键（可以拼路径），后者是用户给的名字（只能显示）。
+    把它们合成一个字段，早晚有人拿后者去拼路径。
+    """
+
+    id: Any
+    request_id: Any
+    kind: str
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str
+    storage_key: str
+    uploaded_by: Any
+    created_at: datetime
+    deleted_at: datetime | None
+
+
+class AttachmentRepositoryPort(Protocol):
+    async def create(
+        self,
+        *,
+        request_id: Any,
+        kind: str,
+        original_filename: str,
+        content_type: str,
+        size_bytes: int,
+        sha256: str,
+        storage_key: str,
+        uploaded_by: Any,
+    ) -> AttachmentView: ...
+
+    async def get(self, attachment_id: Any) -> AttachmentView | None: ...
+
+    async def list_for_request(self, request_id: Any) -> Sequence[AttachmentView]: ...
+
+    async def soft_delete(self, attachment_id: Any) -> bool: ...
+
+
+class ObjectStorePort(Protocol):
+    """对象存储。只有三个动作：发键、存、取。
+
+    `new_key` 单独存在，是为了让"落盘成功但入库失败"能把文件删掉
+    （见 `infrastructure/object_store.py` 的说明）。
+    """
+
+    def new_key(self, suffix: str) -> str: ...
+
+    def save(self, content: bytes, suffix: str, key: str | None = None) -> str: ...
+
+    def load(self, key: str) -> bytes: ...
+
+    def delete(self, key: str) -> bool: ...
+
+
 class PurchaseRepositoryPort(Protocol):
     # ---- 主单 ----
     async def create_request(

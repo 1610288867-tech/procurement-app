@@ -8,8 +8,10 @@
       4) 前端三件              —— tsc --noEmit / vitest run / npm run build
       5) 起服务（若没在跑）     —— 复用 scripts\start.ps1，等就绪
       6) 真实服务冒烟          —— backend\scripts\m6_smoke.py（对着 8000 打 HTTP，跑完自清理）
-      7) 浏览器自检            —— scripts\浏览器自检.mjs（无窗口 Edge + CDP，12 项）
-      8) 清理与残留回查        —— testdata_cleanup.py --scope all（残留非 0 就失败）
+      7) 静默失败与接缝探针     —— backend\scripts\regression_probes.py（三条"不会报错只会算错"
+                                  的约束 + 四条跨阶段接缝，跑完自清理）
+      8) 浏览器自检            —— scripts\浏览器自检.mjs（无窗口 Edge + CDP，12 项）
+      9) 清理与残留回查        —— testdata_cleanup.py --scope all（残留非 0 就失败）
 
   **为什么固定写死、不给 `-OnlyXxx` 之类的开关**：一有开关，就一定会出现
   "这次时间紧、少跑一项"，回归也就失去意义（实施计划 M8 的常见坑里写着这一条）。
@@ -39,6 +41,13 @@ function Write-Head([string]$title) {
 }
 
 # 一步一件事：跑、计时、成功只留一行摘要，失败把原始输出整段打出来并退出。
+#
+# ⚠️ **失败判定只能靠脚本块内部 `throw`，不能靠函数里读 `$LASTEXITCODE`。**
+# 实测踩过：`& $Body` 里的外部命令是在**子作用域**里跑的，它写的是子作用域的
+# `$LASTEXITCODE`；函数里那句 `$LASTEXITCODE = 0` 恰好又在本作用域建了一个副本，
+# 于是 `if ($LASTEXITCODE -ne 0)` 永远比较的是 0 —— **测试挂了也判成通过**。
+# （这就是"1 failed, 221 passed"却被标成 ✓ 的原因。）
+# 所以每个步骤的脚本块在外部命令之后都要自己检查一次退出码并 throw。
 function Invoke-Step {
   param(
     [string]$Title,
@@ -50,15 +59,10 @@ function Invoke-Step {
   $started = Get-Date
   $output = @()
   $failed = $false
-  # ⚠️ 必须先把 $LASTEXITCODE 归零：它是**上一条外部命令**留下的，
-  # 纯 PowerShell 的步骤（例如三条分层自查）不碰它，留着 $null 时会
-  # 被 `-ne 0` 判成失败 —— 实测踩过，表现为"明明 0 命中却说第 1 步失败"。
-  $LASTEXITCODE = 0
 
   Push-Location $WorkDir
   try {
     $output = & $Body 2>&1 | ForEach-Object { "$_" }
-    if ($LASTEXITCODE -ne 0) { $failed = $true }
   } catch {
     $failed = $true
     $output += "异常：$($_.Exception.Message)"
@@ -125,25 +129,31 @@ Invoke-Step "三条分层自查（应无任何输出）" {
 
 Invoke-Step "后端全量测试 pytest -m `"`"（unit + integration）" {
   & $python -m pytest -m "" -q
+  # 失败时 pytest 退出码非 0。这里必须自己检查：见 Invoke-Step 上面的说明。
+  if ($LASTEXITCODE -ne 0) { throw "pytest 退出码 $LASTEXITCODE（上面是完整输出）" }
 } $backendDir
 
 Invoke-Step "后端静态检查 ruff + mypy" {
   & $python -m ruff check app tests scripts
   if ($LASTEXITCODE -ne 0) { throw "ruff 有命中" }
   & $python -m mypy app --ignore-missing-imports
+  if ($LASTEXITCODE -ne 0) { throw "mypy 有问题" }
 } $backendDir
 
 Invoke-Step "前端 tsc --noEmit" {
   npx tsc --noEmit
-  if ($LASTEXITCODE -eq 0) { "类型检查无错误" }
+  if ($LASTEXITCODE -ne 0) { throw "tsc 报错" }
+  "类型检查无错误"
 } $frontendDir
 
 Invoke-Step "前端 vitest run" {
   npx vitest run
+  if ($LASTEXITCODE -ne 0) { throw "vitest 有用例失败" }
 } $frontendDir
 
 Invoke-Step "前端 npm run build（生产构建）" {
   npm run build
+  if ($LASTEXITCODE -ne 0) { throw "生产构建失败" }
 } $frontendDir
 
 Invoke-Step "确保前后端在跑（不在就起，最多等 90 秒）" {
@@ -167,15 +177,25 @@ Invoke-Step "确保前后端在跑（不在就起，最多等 90 秒）" {
 Invoke-Step "真实服务冒烟 m6_smoke.py（19 项，跑完自清理）" {
   $env:PYTHONUTF8 = "1"
   & $python "scripts\m6_smoke.py"
+  if ($LASTEXITCODE -ne 0) { throw "冒烟有未通过项" }
+} $backendDir
+
+Invoke-Step "静默失败与接缝探针 regression_probes.py（14 项，跑完自清理）" {
+  $env:PYTHONUTF8 = "1"
+  & $python "scripts\regression_probes.py"
+  if ($LASTEXITCODE -ne 0) { throw "探针有未通过项" }
 } $backendDir
 
 Invoke-Step "浏览器自检 浏览器自检.mjs（12 项，无窗口 Edge）" {
   node "scripts\浏览器自检.mjs"
+  if ($LASTEXITCODE -ne 0) { throw "浏览器自检有未通过项" }
 }
 
 Invoke-Step "测试数据清理与残留回查（testdata_cleanup.py --scope all）" {
   $env:PYTHONUTF8 = "1"
   & $python "scripts\testdata_cleanup.py" --scope all
+  # 有残留时清理脚本自己返回 1（回查不为 0），这里照样要检查
+  if ($LASTEXITCODE -ne 0) { throw "清理后仍有残留" }
 } $backendDir
 
 # ---------------------------------------------------------------- 汇总

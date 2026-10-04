@@ -17,6 +17,7 @@ import {
   Card,
   Cell,
   EmptyState,
+  Loading,
   ErrorNote,
   PageHeader,
   Row,
@@ -40,11 +41,12 @@ export default function TaskList() {
       <PageHeader
         title="我的待办"
         description="只显示现在轮到您的审批。前面几级批完，后面几级才会出现在对应审批人的待办里。"
+        breadcrumb={[{ label: "首页", to: "/" }, { label: "我的待办" }]}
       />
 
       <Card title={`待处理（${todo.data?.total ?? 0}）`}>
         <ErrorNote error={todo.error} />
-        {todo.isPending && <EmptyState>加载中…</EmptyState>}
+        {todo.isPending && <Loading label="加载待办…" />}
 
         {todo.data && items.length === 0 && (
           <EmptyState>现在没有需要您处理的申请。</EmptyState>

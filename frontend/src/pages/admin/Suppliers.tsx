@@ -73,6 +73,11 @@ export default function AdminSuppliers() {
       <PageHeader
         title="供应商管理"
         description="停用必须填原因（业务规则要求留痕）；已停用与资质过期的都会列在这里。"
+        breadcrumb={[
+          { label: "首页", to: "/" },
+          { label: "管理员" },
+          { label: "供应商管理" },
+        ]}
       />
 
       <Card title="新增供应商">

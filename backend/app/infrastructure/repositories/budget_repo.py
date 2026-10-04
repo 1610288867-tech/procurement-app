@@ -121,6 +121,10 @@ class BudgetRepository:
     ) -> list[tuple[BudgetTransactionRecord, str]]:
         """流水（新→旧），带上申请单号方便人读。
 
+        排序用 `seq` 倒序，不用 `created_at`：同一事务里写的两条流水
+        （`settle()` 的 SPEND + RELEASE）时间戳可能相同，"按时间倒序"会退化成
+        按随机的 `id` 排 —— 对账时看到的顺序每次都可能不一样。
+
         用 `tuple(流水, 单号)` 而不是给流水表加一列冗余单号：
         单号是申请的属性，抄一份进来就多一处会漂移的数据。
         """
@@ -131,8 +135,7 @@ class BudgetRepository:
                 PurchaseRequestRecord.id == BudgetTransactionRecord.request_id,
             )
             .order_by(
-                BudgetTransactionRecord.created_at.desc(),
-                BudgetTransactionRecord.id,
+                BudgetTransactionRecord.seq.desc(),
             )
             .limit(max(1, min(limit, 200)))
         )
@@ -296,8 +299,15 @@ class BudgetRepository:
     ) -> BudgetTransactionRecord:
         """写一条流水。
 
-        `created_at` 由应用侧给（不用 `now()`）：同一事务里写的多条流水
-        会拿到相同的数据库时间，"按时间对账"就退化成随机顺序 —— M6 在事件流上踩过。
+        顺序由 `seq` 保证（数据库侧的单调序列，迁移 `b7d3f0c41a26`），
+        `created_at` 只负责**显示**：同一事务里写的两条流水
+        （`settle()` 的 SPEND + RELEASE）时间戳可能相同，按时间排会退化成按随机的 `id` 排。
+
+        ⚠️ 但 `created_at` 仍然必须由**应用侧**给：这张表的该列没有数据库默认值
+        （不同于 `request_events` 的 `now()`）。漏了它就是 `NOT NULL` 违约，
+        而违约发生在 `flush()` 里，正好会被下面那个 `except` 接住 ——
+        于是报错信息变成"net 上已经有一条 RESERVE 流水"，**完全指错方向**
+        （2026-10-04 实测踩过：把 `created_at` 交给数据库，7 条预算用例全挂在这句话上）。
 
         撞 `UNIQUE(request_id, kind)` 说明同一笔申请被动了两次钱（重试 / 重复调用），
         这是**必须让人看见**的事故，所以转成一个明确的 409，而不是静默多占一份预算。

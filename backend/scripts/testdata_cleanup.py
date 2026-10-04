@@ -50,16 +50,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 sys.path.insert(0, ".")
 
 from sqlalchemy import delete, func, or_, select  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
+from app.config import get_settings  # noqa: E402
 from app.database import SessionFactory, engine  # noqa: E402
 from app.infrastructure.records.approval import (  # noqa: E402
     ApprovalFlowRecord,
     ApprovalTaskRecord,
 )
+from app.infrastructure.records.attachment import AttachmentRecord  # noqa: E402
 from app.infrastructure.records.auth import UserRecord  # noqa: E402
 from app.infrastructure.records.catalog import (  # noqa: E402
     BudgetRecord,
@@ -85,6 +89,36 @@ SELFCHECK_CATEGORY_PREFIX = "SELFCHECK-%"
 TEST_CATEGORY_PREFIX = "TCAT-%"
 TEST_DEPARTMENT_PREFIX = "TDEP-%"
 TEST_USERNAME_PREFIX = "t-%"
+
+
+async def _registered_keys(session: AsyncSession) -> set[str]:
+    """库里所有附件的 `storage_key`（**含已软删除的**）。
+
+    软删除的也要算"在册"：附件是审计证据，删除只是打标记，
+    磁盘上那份必须留着 —— 否则"当时到底附了什么"就真查不出来了。
+    """
+    rows = await session.scalars(select(AttachmentRecord.storage_key))
+    return set(rows.all())
+
+
+def _list_orphan_files(registered: set[str]) -> list[Path]:
+    """磁盘上**没有数据库记录指向**的附件文件（M9）。
+
+    判据是"库里有没有这条键"，不是文件名前缀 —— 磁盘上的名字是 UUID，
+    本来就认不出测试数据（见 `infrastructure/object_store.py` 的说明）。
+    """
+    root = Path(get_settings().upload_dir)
+    if not root.exists():
+        return []
+    orphans: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        # 真实路径是 `<父目录>/<32 位键><后缀>`，storage_key 是 `<前两位>/<全长键>`
+        key = f"{path.parent.name}{path.name}"
+        if path.parent.name and key not in registered:
+            orphans.append(path)
+    return orphans
 
 
 def _parse_args() -> argparse.Namespace:
@@ -178,6 +212,8 @@ async def _run(scope: str, dry_run: bool) -> int:
             )
             for name in names:
                 print(f"    会删品类：{name}")
+            dry_orphans = _list_orphan_files(await _registered_keys(session))
+            print(f"    会删孤儿附件文件：{len(dry_orphans)} 个")
             return 0
 
         counts: dict[str, int] = {}
@@ -305,6 +341,29 @@ async def _run(scope: str, dry_run: bool) -> int:
 
         deleted = {key: value for key, value in counts.items() if value}
         print(f"  已删除：{deleted if deleted else '（没有符合条件的记录）'}")
+
+        # ---- ⑥ 附件文件（M9）：删掉**没有数据库记录指向**的文件 ----
+        #
+        # 为什么按"孤儿"而不是按前缀删：磁盘上的文件名是服务端生成的 UUID
+        # （`infrastructure/object_store.py`），**看不出是不是测试数据** ——
+        # 这正是它的优点（用户文件名不参与拼路径），代价是清理脚本没法按名字判据。
+        #
+        # 所以判据换成"库里还有没有这条 storage_key"：
+        #   有记录（含已软删除的）  → 留着，它是业务数据
+        #   没有任何记录指向        → 孤儿文件，删掉
+        #
+        # 这个判据**在空跑时也能算出条数**，而且不会误伤任何在册附件。
+        orphan_files = _list_orphan_files(await _registered_keys(session))
+        if orphan_files:
+            freed = sum(path.stat().st_size for path in orphan_files)
+            if dry_run:
+                print(f"  会删孤儿附件文件：{len(orphan_files)} 个（{freed} 字节）")
+            else:
+                for path in orphan_files:
+                    path.unlink()
+                print(f"  已删除孤儿附件文件：{len(orphan_files)} 个（{freed} 字节）")
+        else:
+            print("  孤儿附件文件：0 个")
 
         # ---- 回查：残留必须为 0 ----
         leftover = {

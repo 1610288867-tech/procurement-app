@@ -54,12 +54,30 @@ function send(path: string, init: RequestInit): Promise<Response> {
   // `Content-Type: application/json` 整个顶掉 —— 于是后端按表单去解析请求体，
   // 报一句 "Input should be a valid dictionary or object to extract fields from"（422），
   // 而前端看起来完全正常。实测踩过：只有带自定义头的接口会中招。
+  //
+  // ============================ 上传时不能带 Content-Type ============================
+  // multipart 的 `Content-Type` 里必须带 boundary，而 boundary 是浏览器生成随机串时
+  // 才知道的。所以传 `FormData` 时**一个字符都不能写**：
+  //
+  //     headers: { "Content-Type": "" }         ✗ 浏览器真的发一个空 Content-Type，
+  //                                                后端 multipart 解析失败 → 422 "file: Field required"
+  //     headers.delete("Content-Type")          ✓ 浏览器自己填 multipart/form-data; boundary=…
+  //
+  // **空字符串不等于"没设置"** —— 这条实测踩过（三种写法对比：empty-string → 422、
+  // 不传 headers → 201、`Headers.delete()` → 201）。
+  const headers = new Headers(init.headers);
+  if (init.body instanceof FormData) {
+    headers.delete("Content-Type");
+  } else if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   return fetch(`${BASE}${path}`, {
     ...init,
     // 同源时浏览器本来就会带 Cookie，写出来是为了 M10 前后端分源时不漏掉。
     // 另外它也是 M3 的 httpOnly Cookie 能生效的前提。
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
+    headers,
   });
 }
 
@@ -122,6 +140,36 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+/**
+ * 从 `Content-Disposition` 里取回文件名（M9 下载用）。
+ *
+ * 后端按 RFC 5987 发两个：
+ *
+ *     filename="dsh-probe-???.pdf"; filename*=UTF-8''dsh-probe-%E6%8A%A5%E4%BB%B7%E5%8D%95.pdf
+ *
+ * **优先取 `filename*`**：`filename=` 那份是给老客户端兜底的 ASCII 版，
+ * 中文会被替换成 `?`（音译不了就只能这样），拿它当文件名等于把用户的中文名丢掉。
+ *
+ * 解析失败返回 null，由调用方回落到"列表里那个原始文件名" ——
+ * 下载文件名不该成为一个能阻断下载的理由。
+ */
+export function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+
+  const extended = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (extended?.[1]) {
+    try {
+      return decodeURIComponent(extended[1].trim());
+    } catch {
+      // 百分号编码残缺（理论上不会发生）：别在这里抛，往下走回落逻辑
+    }
+  }
+
+  const plain = /filename="([^"]*)"/i.exec(header);
+  if (plain?.[1]) return plain[1];
+  return null;
 }
 
 // ------------------------------------------------------------------ 类型
@@ -256,6 +304,42 @@ export type RequestDetail = {
   request: PurchaseRequest;
   items: PurchaseItem[];
   timeline: RequestEvent[];
+};
+
+// ------------------------------------------------ 附件（M9）
+
+/** 附件用途。是**给人看的分类**，不参与任何校验判定。 */
+export type AttachmentKind =
+  | "QUOTATION"
+  | "CONTRACT"
+  | "INVOICE"
+  | "RECEIPT"
+  | "OTHER";
+
+export const ATTACHMENT_KIND_LABEL: Record<AttachmentKind, string> = {
+  QUOTATION: "报价单",
+  CONTRACT: "合同",
+  INVOICE: "发票",
+  RECEIPT: "验收单",
+  OTHER: "其他",
+};
+
+/** 附件元数据。
+ *
+ * **没有 `storage_key`**：那是服务端的存储细节，后端刻意不返回它。
+ * 磁盘上的文件名由服务端生成（UUID），与 `original_filename` 无关 ——
+ * 后者只用来显示。
+ */
+export type Attachment = {
+  id: string;
+  request_id: string;
+  kind: AttachmentKind;
+  original_filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  uploaded_by: string;
+  created_at: string;
 };
 
 export type ItemInput = {
@@ -541,5 +625,68 @@ export const api = {
     if (params.limit !== undefined) query.set("limit", String(params.limit));
     const suffix = query.toString() ? `?${query}` : "";
     return request<BudgetTransaction[]>(`/api/v1/budgets/transactions${suffix}`);
+  },
+
+  // ------------------------------------------------ 附件（M9）
+
+  /** 某张申请的附件列表（新的在前）。 */
+  listAttachments: (requestId: string) =>
+    request<Attachment[]>(`/api/v1/requests/${requestId}/attachments`),
+
+  /** 上传附件。
+   *
+   * ============================ 两个必须这样做的地方 ============================
+   * 1. **不要自己写 `Content-Type`**：multipart 的 `Content-Type` 里要带 boundary，
+   *    而 boundary 是浏览器生成随机串时才知道的。`send()` 已经会为 `FormData`
+   *    把默认的 `Content-Type: application/json` 删掉，所以这里**什么都不用传** ——
+   *    传 `""` 是错的（浏览器会真的发一个空头，后端解析失败报 422 "file: Field required"）。
+   * 2. **`File` 原样交给 FormData**：`filename` 由浏览器填，中文名会被正确编码。
+   */
+  uploadAttachment: (requestId: string, file: File, kind: AttachmentKind) => {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("kind", kind);
+    return request<Attachment>(`/api/v1/requests/${requestId}/attachments`, {
+      method: "POST",
+      body,
+    });
+  },
+
+  /** 下载附件并触发浏览器保存。
+   *
+   * 为什么不用 `<a href="/api/v1/attachments/…">` 直接指过去：
+   * 那样**拿不到错误**（403/404 会在新标签页里显示一段 JSON，
+   * 用户只会看到一句"无权访问"而不知道发生了什么），也没法统一走
+   * 客户端已有的 401 → 续期 → 重放逻辑。这里先取成 Blob，成功才落盘。
+   */
+  downloadAttachment: async (attachmentId: string, fallbackName: string) => {
+    const response = await fetch(`${BASE}/api/v1/attachments/${attachmentId}/download`, {
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as ApiErrorBody;
+      throw new ApiError(
+        body.error?.message ?? `下载失败：${response.status}`,
+        response.status,
+        body.error?.code,
+        body.error?.request_id,
+      );
+    }
+    const blob = await response.blob();
+    const name =
+      filenameFromDisposition(response.headers.get("Content-Disposition")) ?? fallbackName;
+
+    const url = URL.createObjectURL(blob);
+    try {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      // 不释放就是内存泄漏：Blob URL 会一直把内容留在内存里直到页面关闭
+      URL.revokeObjectURL(url);
+    }
   },
 };

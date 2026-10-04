@@ -53,10 +53,18 @@
   --color-danger-bg: #fef3f2;
 
   /* ---- 圆角：参考站是 .625rem，文档页的按钮量到 6px，取后者 ----
-     只给 sm/md 两档：这个界面里需要圆角的东西只有按钮、输入框、卡片三类，
+     只给 sm/md/lg 三档：按钮与输入框用 sm、卡片用 md、大面板（登录分栏、看板）用 lg。
      再多一档就是没有区别的区别。 */
   --radius-sm: 4px;
   --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* ---- 阴影：两级 ----
+     card = 卡片静置（几乎看不见，只是把卡片从暖白底上"托"起来一点）；
+     pop  = 浮起（登录面板、粘性本页导航）。
+     阴影一律用主色的低透明度，不要用纯黑 —— 暖白底上纯黑会发灰。 */
+  --shadow-card: 0 1px 2px rgba(23, 23, 23, 0.04);
+  --shadow-pop: 0 8px 24px rgba(23, 23, 23, 0.08);
 
   /* ---- 字体：中文界面在 Windows 上的正确写法 ----
      本机实测装有的是：Segoe UI Variable / Segoe UI（西文）、
@@ -100,5 +108,11 @@
   :focus-visible {
     outline: 2px solid var(--color-primary);
     outline-offset: 1px;
+  }
+
+  /* 正文选中态也走暖色系，和整站配色一致（默认的蓝同样突兀） */
+  ::selection {
+    background-color: var(--color-hover);
+    color: var(--color-ink);
   }
 }

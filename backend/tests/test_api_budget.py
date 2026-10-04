@@ -283,13 +283,17 @@ async def _budget_state(budget_id: uuid.UUID) -> dict[str, int]:
 
 
 async def _ledger(request_id: uuid.UUID) -> list[tuple[str, int]]:
-    """这笔申请的流水（按写入顺序）。"""
+    """这笔申请的流水（按写入顺序）。
+
+    排序用 `seq`（数据库发的单调序号），不用 `created_at`：
+    同一事务里写的两条流水时间戳可能相同，按时间排会退化成按随机的 `id` 排。
+    """
     async with SessionFactory() as session:
         rows = (
             await session.execute(
                 select(BudgetTransactionRecord.kind, BudgetTransactionRecord.amount)
                 .where(BudgetTransactionRecord.request_id == request_id)
-                .order_by(BudgetTransactionRecord.created_at, BudgetTransactionRecord.id)
+                .order_by(BudgetTransactionRecord.seq)
             )
         ).all()
     return [(row[0], row[1]) for row in rows]

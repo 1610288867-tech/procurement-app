@@ -25,6 +25,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -160,6 +161,16 @@ class RequestEventRecord(Base):
 
     `payload` 放事件当时的补充信息（比如明细行数、金额），
     刻意**不设外键**到明细：明细会被覆盖式替换，事件必须留下当时的快照。
+
+    ============================ 排序只认 `seq` ============================
+    时间线的顺序是产品语义（"先发生什么"），所以它必须有一个**不受时钟影响**的排序键。
+    `created_at` 做不到：同一事务里写的两条事件可能落在**同一微秒**上，
+    这时按 `created_at` 排就退化成按 `id` 排 —— 而 `id` 是 uuid4，**随机**，
+    于是同一份历史每次读出来的顺序都可能不同（实测撞到过 `REQUEST_SUBMITTED`
+    与 `APPROVAL_STARTED` 颠倒）。
+
+    `seq` 由数据库侧的单调序列发号：谁先落盘谁的值小，与时钟精度、并发、UUID 都无关。
+    `created_at` 保留，但只负责**显示**，不参与排序。
     """
 
     __tablename__ = "request_events"
@@ -171,6 +182,9 @@ class RequestEventRecord(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    # 只追加日志的单调序号（迁移 b7d3f0c41a26）。写入时**不要**给它赋值，
+    # 值由数据库发；手工指定会打乱"先落盘者值小"这条保证。
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(start=1), nullable=False)
     request_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("purchase_requests.id", ondelete="CASCADE"), nullable=False
     )

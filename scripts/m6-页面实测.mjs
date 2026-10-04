@@ -430,6 +430,191 @@ async function main() {
     }
   }
 
+  // ---------- M9：附件 + 全生命周期时间线 ----------
+  // 这一组验的是**页面能不能真的用**：上传得动、列表出得来、下载链接在、
+  // 时间线（读 request_events）与审批进度（读 approval_tasks）是**两个**东西。
+  if (!flowed.error) {
+    await page.send("Page.navigate", { url: `${APP}/requests/${flowed.id}` });
+    await waitFor(
+      "document.body.innerText.indexOf('附件')>=0 && !!document.querySelector('[data-testid=request-timeline]')",
+      "附件区与事件时间线出现",
+    );
+
+    // M9-1：事件流水（request_events）—— 与审批链**同时存在但来源不同**
+    const eventTypes = await evaluate(`[].slice
+      .call(document.querySelectorAll('[data-testid=request-timeline] li'))
+      .map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`);
+    const hasApprovalTimeline = await evaluate(
+      "!!document.querySelector('[data-testid=approval-timeline]')",
+    );
+    check(
+      eventTypes.length >= 3 && hasApprovalTimeline,
+      "详情页同时有两个时间轴：事件流水（request_events）与审批进度（approval_tasks）",
+      `事件条数=${eventTypes.length}，审批链在=${hasApprovalTimeline}；首条=「${(eventTypes[0] ?? '').slice(0, 40)}」`,
+    );
+    check(
+      eventTypes.some((text) => text.includes("提交")) &&
+        eventTypes.some((text) => text.includes("生成审批链")),
+      "事件流水按正序展示，含「提交」与「生成审批链」（顺序与写入一致）",
+      eventTypes.map((t) => t.split(" ")[0]).join(" → "),
+    );
+
+    // M9-2：用途下拉 + 上传按钮都在
+    const attachmentUi = await evaluate(`(() => {
+      const select = document.querySelector('[aria-label=附件用途]');
+      const button = document.querySelector('[data-testid=attachment-upload-button]');
+      return {
+        kinds: select ? [].slice.call(select.options).map((o) => o.textContent.trim()) : [],
+        hasButton: !!button,
+        buttonText: button ? button.textContent.trim() : '',
+      };
+    })()`);
+    check(
+      attachmentUi.kinds.length === 5 && attachmentUi.hasButton,
+      "附件区有 5 种用途（报价单/合同/发票/验收单/其他）与上传按钮",
+      `用途=${attachmentUi.kinds.join("/")}，按钮=「${attachmentUi.buttonText}」`,
+    );
+
+    const beforeTimeline = eventTypes.length;
+
+    // M9-3：**真的把文件塞进 input 再让 React 处理**（不是直接调接口）。
+    // DataTransfer 是唯一能在页面上"造出一个真实 FileList"的办法；
+    // 只设 input.value 是不行的（那会抛错，而且 React 的受控流程收不到 change）。
+    const beforeUpload = await evaluate(`(async () => {
+      const list = await (await fetch('/api/v1/requests/${flowed.id}/attachments')).json();
+      return Array.isArray(list) ? list.length : -1;
+    })()`);
+    const injected = await evaluate(`(() => {
+      const input = document.querySelector('[data-testid=attachment-file-input]');
+      if (!input) return 'no-input';
+      // 一份最小的合法 PDF（内容无关紧要：后端只查文件头 %PDF + 大小）
+      const bytes = new TextEncoder().encode('%PDF-1.7\\n1 0 obj\\n<<>>\\nendobj\\ntrailer\\n%%EOF\\n');
+      const file = new File([bytes], '页面实测报价单.pdf', { type: 'application/pdf' });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'injected';
+    })()`);
+    await waitFor(
+      `(() => { const el = document.querySelector('[data-testid=attachment-list]');
+        return !!el && el.innerText.indexOf('页面实测报价单.pdf') >= 0; })()`,
+      "上传的附件出现在列表里",
+      15000,
+    );
+    const listed = await evaluate(`(() => {
+      const el = document.querySelector('[data-testid=attachment-list]');
+      return el ? el.innerText.replace(/\\s+/g, ' ').trim() : '';
+    })()`);
+    check(
+      injected === "injected" && listed.includes("页面实测报价单.pdf"),
+      "在页面上选文件 → 上传成功 → 列表里出现该附件（走真实 FileList 与 React 事件）",
+      `注入=${injected}；列表=「${listed.slice(0, 90)}」`,
+    );
+    check(
+      // 注意用 `[0-9]` 而不是 `\d`：这段是**字符串里的正则**，`\d` 的反斜杠
+      // 会被模板字符串吃掉，变成字面量 `/d/` —— 永远匹配不上（实测踩过）。
+      listed.includes("报价单") && /[0-9]/.test(listed),
+      "附件行显示用途标签与大小（报价单 · 字节数）",
+      listed.slice(0, 90),
+    );
+    const hasDownload = await evaluate(
+      "[].slice.call(document.querySelectorAll('[data-testid=attachment-list] button'))" +
+        ".some((b) => b.textContent.trim() === '下载')",
+    );
+    check(hasDownload, "附件行有「下载」按钮（走 fetch + Blob，能拿到 403/404 的真实文案）", "");
+
+    await page.send("Page.navigate", { url: `${APP}/requests/${flowed.id}` });
+    await waitFor("!!document.querySelector('[data-testid=request-timeline]')", "重新加载时间线");
+    const afterTimeline = await evaluate(`[].slice
+      .call(document.querySelectorAll('[data-testid=request-timeline] li'))
+      .map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`);
+    check(
+      afterTimeline.length === beforeTimeline + 1 &&
+        afterTimeline[afterTimeline.length - 1].includes("上传附件"),
+      "上传后时间线多出一条「上传附件」（附件事件是服务端写的，不是前端猜的）",
+      `事件 ${beforeTimeline} → ${afterTimeline.length}；末条=「${(afterTimeline[afterTimeline.length - 1] ?? '').slice(0, 60)}」`,
+    );
+
+    // M9-4：前端预检（大小 / 扩展名）——不进网络就该看到提示
+    const oversize = await evaluate(`(() => {
+      const input = document.querySelector('[data-testid=attachment-file-input]');
+      const big = new Uint8Array(11 * 1024 * 1024);
+      const file = new File([big], '超大.pdf', { type: 'application/pdf' });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    })()`);
+    await sleep(400);
+    const oversizeNote = await evaluate("document.body.innerText");
+    check(
+      oversize === "ok" && oversizeNote.includes("超过 10 MB"),
+      "选一个 11 MB 的文件 → 页面上当场提示「超过 10 MB」，不发请求",
+      "",
+    );
+
+    const badExtension = await evaluate(`(() => {
+      const input = document.querySelector('[data-testid=attachment-file-input]');
+      const file = new File([new Uint8Array(64)], '木马.exe', { type: 'application/octet-stream' });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'ok';
+    })()`);
+    await sleep(400);
+    const extNote = await evaluate("document.body.innerText");
+    check(
+      badExtension === "ok" && extNote.includes("只接受"),
+      "选一个 .exe → 页面上当场提示只接受 PDF/JPG/PNG",
+      "",
+    );
+
+    // M9-5：接口层的两个拒绝面（页面预检拦不到的情况由后端兜住）
+    const serverChecks = await evaluate(`(async () => {
+      const form = (name, content) => {
+        const data = new FormData();
+        data.append('file', new File([content], name, { type: 'application/pdf' }));
+        data.append('kind', 'OTHER');
+        return data;
+      };
+      // ① 改名成 .pdf 的 exe：页面预检放行，后端必须 422
+      const exe = await fetch('/api/v1/requests/${flowed.id}/attachments', {
+        method: 'POST',
+        body: form('木马.pdf', new TextEncoder().encode('MZ\\u0090\\u0000\\u0003' + 'x'.repeat(200))),
+      });
+      const exeBody = await exe.json();
+      // ② 没带类型（octet-stream）+ 扩展名可识别 → 走兜底后仍要过文件头校验
+      const data = new FormData();
+      data.append('file', new File([new TextEncoder().encode('MZ fake')], '又是木马.pdf',
+        { type: 'application/octet-stream' }));
+      const fallback = await fetch('/api/v1/requests/${flowed.id}/attachments', {
+        method: 'POST', body: data,
+      });
+      const fallbackBody = await fallback.json();
+      return {
+        exeStatus: exe.status, exeCode: exeBody.error && exeBody.error.code,
+        fallbackStatus: fallback.status, fallbackCode: fallbackBody.error && fallbackBody.error.code,
+      };
+    })()`);
+    check(
+      serverChecks.exeStatus === 422 && serverChecks.exeCode === "MAGIC_BYTES_MISMATCH",
+      "改名成 .pdf 的 exe → 后端 422 MAGIC_BYTES_MISMATCH（页面预检只是体验，边界在后端）",
+      JSON.stringify(serverChecks),
+    );
+    check(
+      serverChecks.fallbackStatus === 422 &&
+        serverChecks.fallbackCode === "MAGIC_BYTES_MISMATCH",
+      "octet-stream 兜底**没有**绕过内容校验：补出 pdf 之后文件头照样被查",
+      `octet-stream 用例=${serverChecks.fallbackStatus}/${serverChecks.fallbackCode}`,
+    );
+
+    const attachmentShot = await shot("06-attachments");
+    check(true, "附件与事件时间线已截图", attachmentShot);
+  }
+
   // ---------- 直接访问一个不存在的任务：要看得到 404，不是白屏 ----------
   await page.send("Page.navigate", {
     url: `${APP}/approvals/tasks/00000000-0000-0000-0000-000000000000`,
@@ -458,7 +643,8 @@ async function main() {
   // 所以这里删不掉自己造的申请与品类。统一走一个清理脚本（与浏览器自检共用）：
   //     cd backend; .venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all
   console.log(
-    "\n提示：本次实测造了 1 条品类（TCAT-PAGE-*）、1 条配套预算与 2 条申请（标题含「M6 页面实测」）。"
+    "\n提示：本次实测造了 1 条品类（TCAT-PAGE-*）、1 条配套预算、2 条申请（标题含「M6 页面实测」）"
+    + "与 1 个附件（含磁盘文件）。"
     + "\n      清理（连浏览器自检的一起）：cd backend; "
     + ".venv\\Scripts\\python.exe scripts\\testdata_cleanup.py --scope all",
   );

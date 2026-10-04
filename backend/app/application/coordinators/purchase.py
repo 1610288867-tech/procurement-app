@@ -25,8 +25,11 @@ if TYPE_CHECKING:  # 只在类型检查时导入，避免两个协调者互相 i
 
 from app.application.idempotency import IdempotencyCoordinator
 from app.application.ports import (
+    AttachmentRepositoryPort,
+    AttachmentView,
     BudgetLedgerPort,
     CatalogRepositoryPort,
+    ObjectStorePort,
     PurchaseItemView,
     PurchaseRepositoryPort,
     PurchaseRequestView,
@@ -36,12 +39,19 @@ from app.application.ports import (
 )
 from app.database import SessionFactory
 from app.domain import events as event_types
+from app.domain.attachments import (
+    AttachmentError,
+    ImageDecoder,
+    safe_kind,
+    validate_upload,
+)
 from app.domain.budget_policy import (
     BudgetError,
     check_reservable,
     resolve_budget_year,
 )
 from app.domain.enums import RequestStatus
+from app.domain.events import ATTACHMENT_ADDED
 from app.domain.org import descendant_ids, parent_map
 from app.domain.permissions import (
     RequestScope,
@@ -55,7 +65,12 @@ from app.domain.purchase import (
     parse_urgency,
 )
 from app.domain.state_machine import allowed_targets, can_transition
-from app.errors import BusinessError, ConflictError, NotFoundError
+from app.errors import (
+    BusinessError,
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+)
 from app.infrastructure.repositories.budget_repo import BudgetRepository
 from app.infrastructure.repositories.catalog_repo import CatalogRepository
 from app.infrastructure.repositories.event_repo import RequestEventRepository
@@ -82,6 +97,9 @@ class PurchaseCoordinator:
         uow: UnitOfWork,
         budgets: BudgetLedgerPort | None = None,
         approval: ApprovalCoordinator | None = None,
+        attachments: AttachmentRepositoryPort | None = None,
+        objects: ObjectStorePort | None = None,
+        image_decoder: ImageDecoder | None = None,
     ) -> None:
         self._requests = requests
         self._events = events
@@ -93,6 +111,11 @@ class PurchaseCoordinator:
         # 审批链在**提交**时建。用可选参数注入而不是直接 import：
         # 两个协调者若互相构造就会绕成环，而这里只是"提交时需要它做一件事"。
         self._approval = approval
+        # 附件（M9）。`objects` 是磁盘那一侧，`image_decoder` 是 Pillow 那一侧 ——
+        # 三个都是可选注入，这样"M9 之前的用例"构造协调者时不用管它们。
+        self._attachments = attachments
+        self._objects = objects
+        self._image_decoder = image_decoder
 
     # ------------------------------------------------------------------ 可见范围
 
@@ -676,6 +699,178 @@ class PurchaseCoordinator:
             # 预留与流水对不上：宁可让整个事务回滚并报出来，也不要静默留下坏账
             raise ConflictError("预算释放失败：预留状态与流水不一致，请人工核对")
         return outstanding
+
+    # ------------------------------------------------------------------ 附件（M9）
+
+    async def upload_attachment(
+        self,
+        *,
+        request_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None,
+        filename: str | None,
+        declared_type: str | None,
+        content: bytes,
+        kind: str | None = None,
+    ) -> AttachmentView:
+        """上传附件。六步校验的**第 1 步**在这里（要查库），其余五步在 domain 层。
+
+        ============================ 第 1 步为什么是"可见范围"而不是"是不是我的" ============================
+        附件挂在申请上，所以能不能传，取决于**能不能看到这张单子** —— 这与读详情
+        用的是同一个判定（`get_request` 带 scope），也就不会出现"详情看不到、附件却能传"
+        这种两个口径打架的情况。
+
+        可见范围外一律 **404** 而不是 403：不告诉调用方"这张单子存在"
+        （与全项目的越权语义一致，见 `boundaries/deps.py` 的文件头）。
+
+        ============================ 磁盘与数据库的一致性 ============================
+        顺序是：**先发键 → 再落盘 → 后写库**。任何一步失败都要把文件删掉：
+
+            写库失败（回滚）  → 文件必须删，否则每次失败都留一个孤儿文件
+            落盘失败          → 直接抛，库里什么都没有，无残留
+
+        反过来（先写库再落盘）就会出现"库里有记录、文件不存在"——
+        那种附件点下载必然 500，而且**没人知道有多少条**。
+        """
+        if self._attachments is None or self._objects is None:
+            raise BusinessError(
+                "附件功能未启用（未装配对象存储）", status_code=503, code="ATTACHMENT_DISABLED"
+            )
+
+        scope = await self._scope_for(
+            actor_id=actor_id, roles=roles, department_id=department_id
+        )
+        record = await self._requests.get_request(
+            request_id, scope=scope, actor_id=actor_id
+        )
+        if record is None:
+            raise NotFoundError(f"采购申请不存在：{request_id}")
+
+        try:
+            validated = validate_upload(
+                filename=filename,
+                declared_type=declared_type,
+                content=content,
+                decode_image=self._image_decoder,
+            )
+        except AttachmentError as exc:
+            raise BusinessError(str(exc), status_code=422, code=exc.code) from exc
+
+        # 先发键：这样"后面任何一步失败"时手里都有键可以把文件删掉
+        storage_key = self._objects.new_key(validated.suffix)
+        self._objects.save(content, validated.suffix, key=storage_key)
+
+        try:
+            attachment = await self._attachments.create(
+                request_id=request_id,
+                kind=safe_kind(kind),
+                original_filename=(filename or "").strip(),
+                content_type=validated.content_type,
+                size_bytes=validated.size_bytes,
+                sha256=validated.sha256,
+                storage_key=storage_key,
+                uploaded_by=actor_id,
+            )
+            # 时间线上记一笔：**不改变状态**（from/to 都是当前状态），
+            # 只是让"这份报价单什么时候挂上来的"有据可查。
+            # 注意它不会进审批链视图（那个读 approval_tasks，是另一套数据）。
+            await self._events.append(
+                request_id=request_id,
+                event_type=ATTACHMENT_ADDED,
+                actor_id=actor_id,
+                from_status=record.status,
+                to_status=record.status,
+                payload={
+                    "attachment_id": str(attachment.id),
+                    "filename": attachment.original_filename,
+                    "size_bytes": attachment.size_bytes,
+                    "kind": attachment.kind,
+                    # 图片尺寸只在这一刻算得出来（解码过），顺手记进事件快照。
+                    # 不落库到 attachments：那是能重算的派生数据，存一份就多一处会漂移。
+                    "image_size": list(validated.image_size) if validated.image_size else None,
+                    # 类型是从扩展名补出来的吗？记下来，"为什么这份文件被判成 PNG"就有据可查。
+                    "type_inferred": validated.type_inferred,
+                },
+            )
+            await self._uow.commit()
+        except Exception:
+            # 库这一侧没成，磁盘上那份就是垃圾 —— 删掉再抛。
+            # 删文件本身不抛异常（`delete` 返回 bool），免得把真实错误盖掉。
+            self._objects.delete(storage_key)
+            raise
+
+        return attachment
+
+    async def list_attachments(
+        self,
+        *,
+        request_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None,
+    ) -> Sequence[AttachmentView]:
+        """某张申请的附件列表（新的在前）。可见范围外 → 404（与上传同一条判定）。"""
+        if self._attachments is None:
+            raise BusinessError(
+                "附件功能未启用（未装配对象存储）", status_code=503, code="ATTACHMENT_DISABLED"
+            )
+        scope = await self._scope_for(
+            actor_id=actor_id, roles=roles, department_id=department_id
+        )
+        if (
+            await self._requests.get_request(request_id, scope=scope, actor_id=actor_id)
+            is None
+        ):
+            raise NotFoundError(f"采购申请不存在：{request_id}")
+        return await self._attachments.list_for_request(request_id)
+
+    async def open_attachment(
+        self,
+        *,
+        attachment_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None,
+    ) -> tuple[AttachmentView, bytes]:
+        """取附件内容（下载用）。返回 `(元数据, 字节)`。
+
+        ============================ 这里为什么是 403 而不是 404 ============================
+        与"换 id 读别人的申请 → 404"看着矛盾，其实不是一回事：
+
+            申请：id 是**猜得到的资源标识**，返回 404 是为了不泄露"它存在"
+            附件：id 同样是 uuid，但**这一条附件确实存在于库里**，
+                  调用方拿到的是"可见但无权"这一档
+
+        所以判定分两层，与 `boundaries/deps.py` 的越权语义完全对齐：
+
+            附件不存在（或已软删除）        → 404
+            附件在，但它挂的申请看不到      → **403**
+            申请也看得到                    → 200 内容
+
+        元数据里的 `content_type` 用**入库时校验过的那一个**，
+        不用请求里带的：那是服务端在"已经看过字节"之后写下来的事实。
+        """
+        if self._attachments is None or self._objects is None:
+            raise BusinessError(
+                "附件功能未启用（未装配对象存储）", status_code=503, code="ATTACHMENT_DISABLED"
+            )
+        attachment = await self._attachments.get(attachment_id)
+        if attachment is None:
+            raise NotFoundError(f"附件不存在：{attachment_id}")
+
+        scope = await self._scope_for(
+            actor_id=actor_id, roles=roles, department_id=department_id
+        )
+        if (
+            await self._requests.get_request(
+                attachment.request_id, scope=scope, actor_id=actor_id
+            )
+            is None
+        ):
+            raise PermissionDeniedError("无权访问该附件")
+
+        return attachment, self._objects.load(attachment.storage_key)
 
     async def _build_approval_chain(
         self,

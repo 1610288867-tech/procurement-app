@@ -22,6 +22,7 @@ import {
   Card,
   Cell,
   EmptyState,
+  Loading,
   ErrorNote,
   PageHeader,
   RequestStatusBadge,
@@ -54,6 +55,7 @@ export default function RequestList() {
       <PageHeader
         title="我的采购申请"
         description="草稿可以改；提交后进入审批，不能再改，但可以撤回。"
+        breadcrumb={[{ label: "首页", to: "/" }, { label: "我的申请" }]}
         action={
           <Link to="/requests/new" className="text-sm text-body hover:underline">
             + 新建申请
@@ -78,7 +80,7 @@ export default function RequestList() {
         }
       >
         <ErrorNote error={requests.error} />
-        {requests.isPending && <EmptyState>加载中…</EmptyState>}
+        {requests.isPending && <Loading label="加载申请列表…" />}
 
         {requests.data && rows.length === 0 && (
           <EmptyState>

@@ -35,6 +35,7 @@ export default function SupplierList() {
       <PageHeader
         title="合格供应商"
         description="只列出未停用、且资质未过期的供应商。"
+        breadcrumb={[{ label: "首页", to: "/" }, { label: "合格供应商" }]}
         action={
           // 只有管理员才该看到这个入口
           isAdmin ? (

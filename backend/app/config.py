@@ -25,7 +25,9 @@ class Settings(BaseSettings):
     # 长度不短于 32 字节（HS256 的密钥短了 PyJWT 会警告）。
     jwt_secret: str = "dev-only-change-me-before-any-real-use"
 
-    # M9 起用：附件落盘目录（M9 之前**没有任何代码读它**）
+    # M9 起**真的有人读它**：附件落盘的根目录，使用者是 `infrastructure/object_store.py`。
+    # 之所以不给它更多开关（大小上限、允许的类型）：那些是**规则**不是**环境差异**，
+    # 写在 `domain/attachments.py` 里才能被测试钉住，放进环境变量就没人测了。
     upload_dir: str = "uploads"
 
     log_level: str = "INFO"

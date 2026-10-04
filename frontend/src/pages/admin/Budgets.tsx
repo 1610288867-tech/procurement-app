@@ -80,6 +80,7 @@ export default function AdminBudgets() {
       <PageHeader
         title="预算"
         description="部门 × 年度 × 品类；金额界面显示「元」，库里存「分」。"
+        breadcrumb={[{ label: "首页", to: "/" }, { label: "管理员" }, { label: "预算" }]}
       />
 
       <Card title="新增预算">

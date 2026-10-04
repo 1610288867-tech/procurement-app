@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -34,14 +33,16 @@ class RequestEventRepository:
     ) -> RequestEventRecord:
         """追加一条事件。
 
-        ============================ 为什么时间戳由应用侧给 ============================
-        `created_at` 的列默认值是 PostgreSQL 的 `now()`，而它返回的是**事务开始时间** ——
-        同一个事务里写的多条事件会拿到**完全相同**的时间戳，于是"按时间正序"退化成
-        按 UUID 随机比较，时间线顺序每次都可能不一样
-        （实测撞到过：同一笔提交里的 `REQUEST_SUBMITTED` 与 `APPROVAL_STARTED` 顺序颠倒）。
+        ============================ 顺序靠 seq，不靠时间戳 ============================
+        时间线是给人看历史的，顺序不稳定是硬伤。两条事件在**同一个事务**里写入时，
+        时间戳可能落在同一微秒上（早期用 `created_at` 排序就是这么翻车的：
+        顺序退化到按 uuid4 的 `id` 比大小，实测撞到过 `REQUEST_SUBMITTED`
+        与 `APPROVAL_STARTED` 颠倒）。
 
-        时间线是给人看历史的，顺序不稳定是硬伤。所以这里在应用侧取一次微秒级时间戳
-        显式写进去：同一事务内先后调用必然递增，顺序与代码执行顺序一致。
+        所以排序键改为 `seq`：数据库侧的单调序列，谁先落盘谁的值小，
+        与时钟精度、并发、UUID 都无关（迁移 `b7d3f0c41a26`）。
+        **这里刻意不给它赋值** —— 手工指定会打乱这条保证，
+        而且列上的 identity 也不需要应用侧参与。
         """
         record = RequestEventRecord(
             request_id=request_id,
@@ -50,17 +51,16 @@ class RequestEventRepository:
             from_status=from_status,
             to_status=to_status,
             payload=dict(payload or {}),
-            created_at=datetime.now(UTC),
         )
         self.session.add(record)
         await self.session.flush()
         return record
 
     async def list_for_request(self, request_id: uuid.UUID) -> list[RequestEventRecord]:
-        """时间线读法：按时间**正序**（先发生的在上面）。"""
+        """时间线读法：按写入顺序**正序**（先发生的在上面）。"""
         statement = (
             select(RequestEventRecord)
             .where(RequestEventRecord.request_id == request_id)
-            .order_by(RequestEventRecord.created_at, RequestEventRecord.id)
+            .order_by(RequestEventRecord.seq)
         )
         return list((await self.session.scalars(statement)).all())

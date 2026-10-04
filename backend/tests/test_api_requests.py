@@ -407,7 +407,7 @@ async def test_same_key_twice_only_submits_once(world: dict, fixture: Fixture) -
             await session.scalars(
                 select(RequestEventRecord.event_type)
                 .where(RequestEventRecord.request_id == uuid.UUID(draft["id"]))
-                .order_by(RequestEventRecord.created_at)
+                .order_by(RequestEventRecord.seq)
             )
         ).all()
         assert events.count("REQUEST_SUBMITTED") == 1, "重放不该再写一条提交事件"

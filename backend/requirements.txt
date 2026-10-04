@@ -44,6 +44,14 @@ pydantic-settings>=2.7,<3.0
 argon2-cffi>=23.1,<26
 PyJWT>=2.10,<3
 
+# ---- 附件（M9）----
+# python-multipart: FastAPI 解析 multipart/form-data 必须依赖它（不然上传接口直接 500）
+# Pillow:           图片**真的解码一次**用（挡"文件头对、内容假"与压缩炸弹）。
+#                   注意它只在基础设施层（infrastructure/image_probe.py）出现，
+#                   domain/ 通过回调拿"能不能解码"，不 import 它。
+python-multipart>=0.0.20
+Pillow>=11.0
+
 # ---- 测试 ----
 pytest>=8.3,<10.0
 pytest-asyncio>=1.0,<2.0
@@ -55,7 +63,5 @@ httpx>=0.28,<1.0
 watchfiles>=1.3,<2.0
 
 # ---- 后续阶段按需追加 ----
-# M7 文件上传：python-multipart>=0.0.20
-# M7 图片校验：Pillow>=11.0          （压缩炸弹防护要真的解码一次）
-# M9 AI 直连：  （httpx 已在上面，不再引 langchain）
-# 质量工具：    ruff>=0.9   mypy>=1.14
+# M11 AI 直连：（httpx 已在上面，不再引 langchain）
+# 质量工具：  ruff>=0.9   mypy>=1.14

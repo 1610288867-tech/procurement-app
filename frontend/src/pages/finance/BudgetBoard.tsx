@@ -25,6 +25,7 @@ import {
   Card,
   Cell,
   EmptyState,
+  Loading,
   ErrorNote,
   PageHeader,
   Row,
@@ -102,11 +103,12 @@ export default function BudgetBoard() {
       <PageHeader
         title="预算看板"
         description="部门 × 品类的总额 / 已预留 / 已花 / 可用。只读 —— 调整预算请走「预算」管理页。"
+        breadcrumb={[{ label: "首页", to: "/" }, { label: "预算看板" }]}
       />
 
       <Card title="合计">
         <ErrorNote error={budgets.error} />
-        {budgets.isPending && <EmptyState>加载中…</EmptyState>}
+        {budgets.isPending && <Loading label="加载预算…" />}
         {budgets.data && (
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             {[
@@ -190,7 +192,7 @@ export default function BudgetBoard() {
 
       <Card title={`预算流水（最近 ${transactions.data?.length ?? 0} 条）`}>
         <ErrorNote error={transactions.error} />
-        {transactions.isPending && <EmptyState>加载中…</EmptyState>}
+        {transactions.isPending && <Loading label="加载流水…" />}
 
         {transactions.data && transactions.data.length === 0 && (
           <EmptyState>还没有流水。提交一笔申请后就会出现 RESERVE。</EmptyState>

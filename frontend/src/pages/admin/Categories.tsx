@@ -146,6 +146,7 @@ export default function AdminCategories() {
       <PageHeader
         title="采购品类"
         description="审批层级按金额动态生成，规则存在品类上：改规则不改代码。"
+        breadcrumb={[{ label: "首页", to: "/" }, { label: "管理员" }, { label: "采购品类" }]}
       />
 
       <Card title={editingId ? "修改审批策略" : "新增采购品类"}>

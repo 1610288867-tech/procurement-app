@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, Query
@@ -27,8 +28,12 @@ from app.application.idempotency import IdempotencyCoordinator
 from app.application.ports import PurchaseRequestView
 from app.boundaries.deps import CurrentUser, SessionDep
 from app.boundaries.http.approvals import approval_coordinator
+from app.config import get_settings
 from app.database import SessionFactory
 from app.errors import BusinessError
+from app.infrastructure.image_probe import decode_image
+from app.infrastructure.object_store import LocalObjectStore
+from app.infrastructure.repositories.attachment_repo import AttachmentRepository
 from app.infrastructure.repositories.budget_repo import BudgetRepository
 from app.infrastructure.repositories.catalog_repo import CatalogRepository
 from app.infrastructure.repositories.event_repo import RequestEventRepository
@@ -51,7 +56,10 @@ def purchase_coordinator(session: SessionDep) -> PurchaseCoordinator:
     - `ApprovalCoordinator`（M6）是**提交时**用的：提交这个事务里要按品类策略
       建审批流与全部任务。两边共用同一个 `session`，所以"状态 + 事件 + 审批链"
       落在同一个事务里 —— 建链失败（例如某级缺人）时状态也会一起回滚。
+    - 附件（M9）三件套：仓库 + 本地对象存储 + 图片解码器。解码器在这里注入
+      （而不是让 domain 去 import Pillow），根目录来自 `settings.upload_dir`。
     """
+    settings = get_settings()
     return PurchaseCoordinator(
         requests=PurchaseRepository(session),
         events=RequestEventRepository(session),
@@ -62,6 +70,9 @@ def purchase_coordinator(session: SessionDep) -> PurchaseCoordinator:
         uow=session,
         budgets=BudgetRepository(session),
         approval=approval_coordinator(session),
+        attachments=AttachmentRepository(session),
+        objects=LocalObjectStore(Path(settings.upload_dir)),
+        image_decoder=decode_image,
     )
 
 

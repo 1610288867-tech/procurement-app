@@ -55,7 +55,14 @@ export default function TaskDetail() {
   if (detail.error) {
     return (
       <>
-        <PageHeader title="审批任务" />
+        <PageHeader
+          title="审批任务"
+          breadcrumb={[
+            { label: "首页", to: "/" },
+            { label: "我的待办", to: "/approvals/tasks" },
+            { label: "审批任务" },
+          ]}
+        />
         <Card>
           <ErrorNote error={detail.error} />
           <p className="mt-2 text-xs text-faint">
@@ -137,6 +144,11 @@ export default function TaskDetail() {
             ← 回到待办
           </Link>
         }
+        breadcrumb={[
+          { label: "首页", to: "/" },
+          { label: "我的待办", to: "/approvals/tasks" },
+          { label: "审批任务" },
+        ]}
       />
 
       <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">

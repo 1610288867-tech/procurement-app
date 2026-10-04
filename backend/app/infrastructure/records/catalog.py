@@ -13,6 +13,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     String,
@@ -163,9 +164,10 @@ class BudgetTransactionRecord(Base):
                                    而不是悄悄多占一份预算（幂等表挡不住这种重试）。
         amount > 0                 金额为 0 的流水没有意义，只会让对账多出一行噪音。
 
-    `created_at` 由**应用侧**写入（不用 `server_default=now()`）：`now()` 是事务开始时间，
-    同一事务里写的多条流水会拿到相同时间戳，"按时间对账"就退化成随机顺序 ——
-    事件流在 M6 踩过同一个坑（见 `event_repo.append` 的说明）。
+    ============================ 时间戳只负责显示 ============================
+    `created_at` 由**应用侧**写入（这张表的该列没有数据库默认值，见下），
+    而同一事务里写的多条流水会拿到**几乎相同**的时间戳。所以它不能当排序键 ——
+    对账顺序由 `seq` 保证，`created_at` 只用来回答"这笔钱是什么时候动的"。
     """
 
     __tablename__ = "budget_transactions"
@@ -183,6 +185,12 @@ class BudgetTransactionRecord(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    # 只追加日志的单调序号（迁移 b7d3f0c41a26）。**不要**手工赋值，值由数据库发。
+    #
+    # 为什么必须有它：`settle()` 在一个事务里连写 `SPEND` 与 `RELEASE`，
+    # 两条流水的时间戳可能落在**同一微秒**，于是"按时间对账"退化成按 `id`（uuid4，随机）排，
+    # 每次读出来的顺序都可能不同 —— 对账读起来就是"先花的钱、后放的额度"颠倒。
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(start=1), nullable=False)
     # RESTRICT：还有流水的预算行不许被删 —— 账本不能凭空少一截
     budget_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("budgets.id", ondelete="RESTRICT"), nullable=False
@@ -194,6 +202,10 @@ class BudgetTransactionRecord(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     # 单位：分。永远是**正数**，方向由 kind 表达
     amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # ⚠️ **没有** server_default：由应用侧 `created_at=datetime.now(UTC)` 写入
+    # （与 `RequestEventRecord` 不同，那边的列默认值是 `now()`）。
+    # 这里刻意不加默认值去"统一"两处 —— 那需要动已有表的 DDL，
+    # 而本次要修的只是排序；改列默认值不在授权范围内。
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

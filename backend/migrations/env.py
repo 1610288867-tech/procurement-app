@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
 from app.infrastructure.records import approval as _approval  # noqa: F401  autogenerate
+from app.infrastructure.records import attachment as _attachment  # noqa: F401  autogenerate
 from app.infrastructure.records import auth as _auth  # noqa: F401  autogenerate
 from app.infrastructure.records import catalog  # noqa: F401  autogenerate
 from app.infrastructure.records import purchase as _purchase  # noqa: F401  autogenerate

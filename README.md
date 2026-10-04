@@ -193,30 +193,33 @@ procurement-app/
 │   │   │   └── coordinators/     一个用例域一个文件（auth / catalog / purchase / approval）
 │   │   ├── boundaries/         HTTP 边界 —— 只解析 / 校验 / 鉴权
 │   │   │   ├── deps.py           当前用户、角色依赖（M3）
-│   │   │   └── http/             一个分组一个文件（auth / catalog / requests / approvals / admin）
+│   │   │   └── http/             一个分组一个文件（auth / catalog / requests / attachments / approvals / admin）
 │   │   └── infrastructure/     适配器与组合根 —— 一个聚合一个文件
 │   │       ├── security.py       口令哈希（Argon2id）+ JWT 双令牌（M3）
 │   │       ├── login_throttle.py 登录限流（进程内字典，不引 Redis）
-│   │       ├── records/          ORM 映射（base / catalog / auth / purchase / approval）
-│   │       └── repositories/     数据访问（catalog / user / purchase / approval / budget / event / idempotency）
-│   ├── migrations/             Alembic（7 个：suppliers → master data → users → budget CHECK → requests → approvals → budget_transactions）
+│   │       ├── object_store.py   附件落盘（M9）：UUID 键 + 两层目录，永不用用户文件名
+│   │       ├── image_probe.py    图片真解码（M9）：**全项目唯一 import Pillow 的地方**
+│   │       ├── records/          ORM 映射（base / catalog / auth / purchase / approval / attachment）
+│   │       └── repositories/     数据访问（catalog / user / purchase / approval / budget / event / idempotency / attachment）
+│   ├── migrations/             Alembic（9 个：suppliers → master data → users → budget CHECK → requests → approvals → budget_transactions → log sequence columns → attachments）
 │   ├── tests/                  pytest（unit 默认档 / integration 分档）
 │   ├── scripts/seed.py         演示数据（幂等，可反复跑）
 │   ├── scripts/m6_smoke.py     对着真实服务打 19 项 HTTP 验收（跑完自清理）
-│   ├── scripts/testdata_cleanup.py  清测试前缀数据（`--scope page|all`，`--dry-run` 可选）
+│   ├── scripts/regression_probes.py  静默失败 3 条 + 跨阶段接缝 4 条（14 项，跑完自清理）
+│   ├── scripts/testdata_cleanup.py  清测试前缀数据（`--scope page|all`，`--dry-run` 可选；**连磁盘上的孤儿附件文件一起清**）
 │   ├── pyproject.toml          pytest 分档、ruff、mypy 配置
 │   └── requirements.txt        唯一的依赖事实来源
 ├── frontend/
 │   └── src/
 │       ├── api/client.ts       统一 HTTP 客户端（同源，无 BASE）
 │       ├── api/hooks/          TanStack Query hooks（useCatalog / useAuth / useRequests / useApprovals）
-│       ├── components/         跨页组件（ui.tsx 界面原语 / RequireAuth.tsx 路由守卫 / ApprovalTimeline.tsx 审批链三态时间轴）
+│       ├── components/         跨页组件（ui.tsx 界面原语 / RequireAuth.tsx 路由守卫 / ApprovalTimeline.tsx 审批链三态 / RequestTimeline.tsx 事件流水 / AttachmentSection.tsx 附件）
 │       ├── lib/money.ts        金额换算的唯一入口（元 ⇄ 分）
 │       ├── lib/idempotency.ts  幂等键生成（提交/撤回用）
-│       ├── pages/              页面（Home / Login / SupplierList / requester 三个申请页 / approver 待办与任务详情 / finance 预算看板 / admin 三个管理页）
+│       ├── pages/              页面（Home 工作台 / Login 分栏登录 / SupplierList / requester 三个申请页 / approver 待办与任务详情 / finance 预算看板 / admin 三个管理页）
 │       ├── router.tsx          路由表
 │       ├── index.css           设计令牌（Tailwind v4 @theme，换风格只动这一个文件）
-│       └── App.tsx             外壳：QueryClient + Router + 侧边栏布局
+│       └── App.tsx             外壳：侧边栏（图标 + 分组）+ 粘性顶栏（面包屑）+ 内容区
 ├── docs/
 │   ├── ER-图.md                22 张表（M9 之前建 15 张）+ 三条关系约束
 │   ├── 业务规则.md             10 条核心规则（含职责分离与授权失败留痕）
@@ -224,6 +227,7 @@ procurement-app/
 │   └── 采购内控对照.md         外部依据 ↔ 本项目 ↔ 定稿口径
 ├── docker-compose.yml          薄封装，指向仓库外的数据库编排
 ├── scripts/
+│   ├── 回归验收.ps1            ★ 一条命令跑完 11 步回归（退出码 0 = 全过），M8 起纳入
 │   ├── dev-up.ps1              一键拉起 Docker 引擎 + 数据库（可带 -WithApi -WithFrontend）
 │   ├── start.ps1               启动前后端（各开一个新窗口，并等到就绪）
 │   ├── run-api.ps1             启动后端（uvicorn --reload）
@@ -259,12 +263,12 @@ procurement-app/
 | M1 | 骨架贯通（用「供应商」打通全链路） | ✅ 完成（2026-10-02） |
 | M2 | 主数据（部门 / 品类 / 供应商 / 预算） | ✅ 完成（2026-10-02） |
 | M3 | 账号与权限（多角色 + JWT + 数据级权限） | ✅ 完成（2026-10-02）※ |
-| M4 | 前端设计系统（设计令牌 + 侧边栏外壳 + 共享界面原语） | ✅ 完成（2026-10-02） |
+| M4 | 前端设计系统（设计令牌 + 侧边栏外壳 + 共享界面原语） | ✅ 完成（2026-10-02；**2026-10-04 二次打磨**：顶栏面包屑、分组侧栏、指标卡与本页导航、分栏登录页、工作台首页） |
 | M5 | 采购申请（草稿 / 明细 / 提交 / 撤回 + 幂等） | ✅ 完成（2026-10-02） |
 | **M6** | **审批引擎**（动态多级审批、规则 6 顺序门控、认领与驳回） | ✅ 完成（2026-10-03）★ |
 | **M7** | **预算并发预留**（条件更新 + 只追加流水 + 只读看板） | ✅ 完成（2026-10-04）★ |
-| M8 | 回归验收（不含新功能：整体复跑一遍历史验收） | ⬜ |
-| M9 | 附件与时间线 | ⬜ |
+| **M8** | **回归验收**（可复跑入口 + 全量复跑 + 静默失败探针；不含新功能） | ✅ 完成（2026-10-04） |
+| M9 | 附件与时间线（六步校验 / UUID 落盘 / 鉴权下载 / 两个时间轴组件） | ✅ 完成（2026-10-04） |
 | M10 | 履约链（询价 → 定标 → 订单 → 收货 → 发票 → 付款） | ⬜ |
 | M11 | AI 制度助手 | ⬜ 可不做 |
 | M12 | 桌面壳与移动端 | ⬜ 可不做 |
@@ -391,6 +395,8 @@ M6 已完成审批引擎；其余业务接口按阶段逐个补齐。
 | `GET /api/v1/approvals/requests/{id}/flow` | 审批链进度（谁已批、现在轮到谁） | 登录 + 数据可见 | ✅ M6 |
 | `POST /api/v1/approvals/tasks/{id}/delegate` | 委托他人 | — | ❌ 不做（2026-10-03 定稿，见业务规则第 9 条） |
 | `GET /api/v1/budgets`、`/api/v1/budgets/transactions` | 预算看板与流水（**只读**，带部门 / 品类名与申请单号） | **`FINANCE` / `ADMIN`** | ✅ M7 |
+| `POST` / `GET /api/v1/requests/{id}/attachments` | 上传附件（PDF / JPEG / PNG，≤ 10 MB，六步校验）、某张申请的附件列表 | 登录 + 数据可见 | ✅ M9 |
+| `GET /api/v1/attachments/{id}/download` | 鉴权下载（强制 `attachment` + `nosniff`；**越权 403**、不存在 404） | 登录 + 数据可见 | ✅ M9 |
 | `/api/v1/sourcing/*`、`/orders/*`、`/receipts/*`、`/payments/*` | 询价、定标、订单、收货、付款 | 按角色 | ⬜ M10 |
 | `/api/v1/chat/*` | 制度问答（流式） | 登录 | ⬜ M11 |
 
@@ -412,6 +418,19 @@ refresh 的 `Path` 限定到 `/api/v1/auth/refresh`）；登录连续失败 5 �
 
 ## 验收与测试
 
+**想一次跑完全部检查（M8 起）**：
+
+```powershell
+cd D:\procurement-app
+.\scripts\回归验收.ps1     # 11 步：分层自查 → 后端全量 → ruff/mypy → 前端三件
+                          # → 起服务 → 真实服务冒烟 → 静默失败与接缝探针 → 浏览器自检 → 清理
+```
+
+**退出码 0 = 全过**；任何一步失败会**停在那一步**并打印原始输出。
+它**没有任何开关** —— 有开关就一定会出现"这次时间紧、少跑一项"。
+
+也可以单独跑（下面这些是回归入口里的同一批命令）：
+
 测试刻意分成两档，让最常敲的命令永远秒回：
 
 ```powershell
@@ -427,13 +446,21 @@ pytest -m ""              # 全量
 
 ```powershell
 cd backend
-ruff check app tests
+ruff check app tests scripts   # scripts/ 里也有代码（种子 / 冒烟 / 探针 / 清理脚本）
 mypy app --ignore-missing-imports
 
 cd ..\frontend
 npx tsc --noEmit
 npx vitest run
 npm run build
+```
+
+对着**真实服务**的两组检查（后端要在 8000 跑着，两组都跑完自清理）：
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe scripts\m6_smoke.py            # 19 项：审批链、越级 403、缺人 422…
+.\.venv\Scripts\python.exe scripts\regression_probes.py   # 14 项：三条"静默失败"约束 + 四条跨阶段接缝
 ```
 
 ### 浏览器自检（渲染与交互）
@@ -454,8 +481,14 @@ node scripts\浏览器自检.mjs
 注意 C 组会往开发库写一条 `SELFCHECK-*` 前缀的品类和一条配套预算（方便你认出来）；
 跑完它会把清理命令打在屏幕上。
 
-审批链另有一个浏览器实测脚本（`node scripts\m6-页面实测.mjs`，20 项 + 截图，**需要
-自己先起一个带 `--remote-debugging-port=9222` 的 Edge**）。
+审批链另有一个浏览器实测脚本（`node scripts\m6-页面实测.mjs`，**32 项** + 截图，**需要
+自己先起一个带 `--remote-debugging-port=9222` 的 Edge**）。M9 起它还会**真的在页面上传一个附件**
+（用 `DataTransfer` 造出真实 `FileList` 再派发 `change`，走完整的 React 事件链），
+并顺带验两条拒绝面：改名成 `.pdf` 的 exe、以及 `octet-stream` 兜底有没有绕过内容校验。
+
+窄屏还有一个（`node scripts\窄屏自检.mjs`，20 项）：把视口切成 **375×812**（CDP 设备模拟），
+量的是**断点两侧的客观差异**（侧栏 375px 横条 ⇄ 256px 左栏、右侧目录 `display:none` ⇄ `block`、
+两处面包屑不同时出现）而不是肉眼看截图。**它不写库、只读页面。**
 
 ### 三条分层自查（提交前跑，应全部无输出）
 
@@ -483,12 +516,16 @@ Select-String -Path backend\app\infrastructure\repositories\*.py -Pattern "\.com
 | `pytest`（M6 收尾） | ✅ **187 passed**（unit 110 + integration 77，含会签/或签、越级 403、并发推进指针、策略可达性） |
 | `pytest`（M6 之后的内控修复） | ✅ **198 passed**（+11 条：SoD 纯函数 5 + 集成 5、主数据接口收口 1；见 PROGRESS.md「待修：内控缺口」） |
 | `pytest`（M7 收尾） | ✅ **222 passed**（unit 129 + integration 93，含预算并发、失败回滚、幂等不重复预留、结转差额释放、计划外 422、看板权限） |
+| `pytest`（M9 收尾） | ✅ **307 passed**（+85：附件六步校验 53 条纯函数、真解码器 9 条、附件接口 23 条集成） |
+| **`scripts\回归验收.ps1`（M8 回归入口，11 步）** | ✅ **退出码 0**：分层自查 0 命中 / 222 passed / ruff+mypy 干净 / tsc+vitest+build / 冒烟 19/19 / 探针 14/14 / 浏览器自检 12/12 / 残留 0 |
+| 只追加日志排序修复后**全量 5 轮连跑** | ✅ **5/5 全绿**（每轮 222 passed，37.2–40.8s）—— 修的是时间线/流水的顺序退化，见 PROGRESS.md |
+| **`node scripts\窄屏自检.mjs`（375×812 设备模拟）** | ✅ **20/20**（四个页面横向溢出 0 处、断点两侧宽度跳变、面包屑两处不同时出现） |
 | `scripts\m6_smoke.py`（对着真实服务打 HTTP） | ✅ **19/19**（四档金额对照表、越级 403、驳回、SOURCING、缺人 422、预算配置，跑完自清理） |
-| `node scripts\m6-页面实测.mjs`（浏览器实测） | ✅ **20/20**（待办列表、任务详情、认领→通过、时间轴三态，含截图） |
-| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 272.81 KB（gzip 84.17） |
+| `node scripts\m6-页面实测.mjs`（浏览器实测） | ✅ **32/32**（待办列表、任务详情、认领→通过、审批链三态、**M9：附件上传/下载、事件流水正序、两条拒绝面**，含截图） |
+| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 287.02 KB（gzip 88.55） |
 | `node scripts\浏览器自检.mjs`（无窗口 Edge + CDP） | ✅ **12 项全过**（含"侧边栏角色与 `/auth/me` 一致"、M7 预算看板） |
 | 并发预留用例连跑 20 次 | ✅ **20/20** 稳定（`test_concurrent_submits_never_overdraw`） |
-| `ruff` / `mypy` | ✅ All checks passed / 48 files, no issues |
+| `ruff` / `mypy` | ✅ All checks passed / 54 files, no issues |
 | 三条分层自查 | ✅ 全部无输出 |
 
 > 上面的数字是**实跑记录**（最近一次：2026-10-04，全量 `pytest -m ""` → 222 passed）。

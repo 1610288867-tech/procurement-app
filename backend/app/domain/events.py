@@ -14,6 +14,7 @@
     ITEMS_*     明细被整体替换
     APPROVAL_*  审批相关（M6 起）
     BUDGET_*    预算相关（M7 起）
+    ATTACHMENT_* 附件相关（M9 起）
 
 **M5 只写它真正会用的那几个**：一次写全套词表，等于给后面的阶段留了一堆
 "看起来存在、其实没有任何代码会产生它"的常量，读代码的人会被误导。
@@ -34,6 +35,12 @@ APPROVAL_APPROVED = "APPROVAL_APPROVED"
 APPROVAL_REJECTED = "APPROVAL_REJECTED"
 APPROVAL_COMPLETED = "APPROVAL_COMPLETED"
 
+# ---- 附件（M9）----
+#: 上传成功记一条。**不改变状态**（`from_status == to_status`），
+#: 只是让时间线能回答"这份报价单是什么时候挂上来的"。
+#: 注意：它和审批链视图是两套数据（见计划里"别混成一张表"那条）。
+ATTACHMENT_ADDED = "ATTACHMENT_ADDED"
+
 #: 全套事件类型。测试拿它做白名单断言：
 #: 出现词表以外的事件 = 有人绕过常量直接写了字符串，时间线上会显示成英文码。
 EVENT_TYPES: frozenset[str] = frozenset(
@@ -48,5 +55,6 @@ EVENT_TYPES: frozenset[str] = frozenset(
         APPROVAL_APPROVED,
         APPROVAL_REJECTED,
         APPROVAL_COMPLETED,
+        ATTACHMENT_ADDED,
     }
 )

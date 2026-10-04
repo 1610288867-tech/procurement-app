@@ -1,7 +1,12 @@
-/** 申请详情：内容 + 明细 + 时间线（M5）。
+/** 申请详情：内容 + 明细 + 审批进度 + 附件 + 时间线（M5；M9 起加附件与事件流水）。
  *
  * 三个按钮的出现条件是**状态决定的**（草稿可改可提交，审批中只能撤回）——
  * 但真正拦住的永远是后端：前端藏按钮只是别让人点了白点。
+ *
+ * ============================ M9：两个时间轴是分开的 ============================
+ * 「审批进度」读 `approval_tasks`（卡片 + `ApprovalTimeline`，回答"卡在谁那里"）；
+ * 「时间线」读 `request_events`（`RequestTimeline`，回答"经历过什么"）。
+ * 数据来源不同、语义不同，所以是两个组件、两个分区 —— 详见 `RequestTimeline` 的文件头。
  */
 
 import { useState } from "react";
@@ -20,6 +25,8 @@ import {
 import { formatFen, yuanToFen } from "../../lib/money";
 import { newIdempotencyKey } from "../../lib/idempotency";
 import { ApprovalTimeline } from "../../components/ApprovalTimeline";
+import { AttachmentSection } from "../../components/AttachmentSection";
+import { RequestTimeline } from "../../components/RequestTimeline";
 import {
   Button,
   Card,
@@ -29,26 +36,11 @@ import {
   Input,
   Loading,
   PageHeader,
+  PageToc,
   RequestStatusBadge,
   Row,
   Table,
 } from "../../components/ui";
-
-/** 事件类型 → 中文（词表在 `backend/app/domain/events.py`）。 */
-const EVENT_LABEL: Record<string, string> = {
-  REQUEST_CREATED: "创建草稿",
-  REQUEST_UPDATED: "修改草稿",
-  REQUEST_SUBMITTED: "提交",
-  REQUEST_WITHDRAWN: "撤回",
-  REQUEST_DISCARDED: "丢弃",
-  // M6：审批链上的动作。APPROVAL_STARTED 不是状态变更（from/to 都是 IN_APPROVAL），
-  // 它记的是"按当时的策略算出了哪几级"这个事实。
-  APPROVAL_STARTED: "生成审批链",
-  APPROVAL_CLAIMED: "认领审批任务",
-  APPROVAL_APPROVED: "审批通过",
-  APPROVAL_REJECTED: "审批驳回",
-  APPROVAL_COMPLETED: "审批全部通过",
-};
 
 type LineRow = { name: string; spec: string; quantity: string; unitPriceYuan: string };
 
@@ -154,292 +146,321 @@ export default function RequestDetail() {
         title={request.title}
         description={`${request.code} · ${formatFen(request.amount_total_fen)}`}
         action={<RequestStatusBadge status={request.status} />}
+        breadcrumb={[
+          { label: "首页", to: "/" },
+          { label: "我的申请", to: "/requests" },
+          { label: "申请详情" },
+        ]}
       />
 
-      <Card title="申请内容">
-        {!editing ? (
-          <div className="space-y-4">
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-              <Detail label="紧急程度" value={request.urgency === "URGENT" ? "加急" : "普通"} />
-              <Detail label="金额" value={formatFen(request.amount_total_fen)} mono />
-              <Detail label="创建时间" value={request.created_at.slice(0, 19).replace("T", " ")} />
-              <Detail
-                label="提交时间"
-                value={
-                  request.submitted_at
-                    ? request.submitted_at.slice(0, 19).replace("T", " ")
-                    : "—"
-                }
-              />
-            </dl>
-            {request.reason && (
-              <p className="text-sm text-body">说明：{request.reason}</p>
-            )}
-            {Object.keys(request.form_data ?? {}).length > 0 && (
-              <div className="text-sm">
-                <p className="text-muted">品类表单</p>
-                <pre className="mt-1 overflow-x-auto rounded-sm bg-section p-3 text-xs text-body">
-                  {JSON.stringify(request.form_data, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <Field label="标题">
-              <Input
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                required
-                maxLength={200}
-              />
-            </Field>
-            <Field label="说明">
-              <Input
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                maxLength={2000}
-              />
-            </Field>
+      {/* 两栏：正文 + 右侧「本页导航」。
+          这一页有四段（内容 / 明细 / 审批进度 / 时间线），滚到中段很容易忘记下面还有什么。
+          窄屏没有右侧栏，TOC 直接不渲染 —— 它只是导航辅助，不该在手机上占一整屏。
 
-            <div>
-              <p className="text-sm font-medium text-body">明细</p>
-              <div className="mt-2 space-y-2">
-                {lines.map((line, index) => (
-                  <div key={index} className="flex flex-wrap items-end gap-2">
-                    <Field label="名称" className="min-w-40 flex-1">
-                      <Input
-                        value={line.name}
-                        onChange={(event) =>
-                          setLines((current) =>
-                            current.map((item, i) =>
-                              i === index ? { ...item, name: event.target.value } : item,
-                            ),
-                          )
-                        }
-                        required
-                      />
-                    </Field>
-                    <Field label="规格" className="min-w-32">
-                      <Input
-                        value={line.spec}
-                        onChange={(event) =>
-                          setLines((current) =>
-                            current.map((item, i) =>
-                              i === index ? { ...item, spec: event.target.value } : item,
-                            ),
-                          )
-                        }
-                      />
-                    </Field>
-                    <Field label="数量" className="w-24">
-                      <Input
-                        className="text-right"
-                        type="number"
-                        min={1}
-                        value={line.quantity}
-                        onChange={(event) =>
-                          setLines((current) =>
-                            current.map((item, i) =>
-                              i === index
-                                ? { ...item, quantity: event.target.value }
-                                : item,
-                            ),
-                          )
-                        }
-                        required
-                      />
-                    </Field>
-                    <Field label="单价（元）" className="w-32">
-                      <Input
-                        className="text-right"
-                        value={line.unitPriceYuan}
-                        onChange={(event) =>
-                          setLines((current) =>
-                            current.map((item, i) =>
-                              i === index
-                                ? { ...item, unitPriceYuan: event.target.value }
-                                : item,
-                            ),
-                          )
-                        }
-                        required
-                      />
-                    </Field>
-                    <button
-                      type="button"
-                      disabled={lines.length === 1}
-                      onClick={() =>
-                        setLines((current) => current.filter((_, i) => i !== index))
-                      }
-                      className="pb-2 text-xs text-muted hover:text-danger disabled:opacity-30"
-                    >
-                      删除
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setLines([
-                    ...lines,
-                    { name: "", spec: "", quantity: "1", unitPriceYuan: "" },
-                  ])
-                }
-                className="mt-3 text-sm text-body hover:underline"
-              >
-                + 加一行
-              </button>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Button
-                onClick={saveEdits}
-                disabled={patch.isPending || replaceItems.isPending}
-              >
-                {patch.isPending || replaceItems.isPending ? "保存中…" : "保存"}
-              </Button>
-              <button
-                type="button"
-                onClick={() => setEditing(false)}
-                className="text-sm text-muted hover:underline"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        )}
-
-        {!editing && (
-          <div className="mt-5 flex items-center gap-3 border-t border-line pt-4">
-            {request.status === "DRAFT" && (
-              <>
-                <Button variant="ghost" onClick={startEditing}>
-                  编辑草稿
-                </Button>
-                <Button
-                  disabled={submit.isPending}
-                  onClick={() =>
-                    submit.mutate({
-                      id: request.id,
-                      version: request.version,
-                      idempotencyKey: submitKey,
-                    })
-                  }
-                >
-                  提交审批
-                </Button>
-                <button
-                  className="text-sm text-muted hover:text-danger"
-                  disabled={discard.isPending}
-                  onClick={() =>
-                    discard.mutate(
-                      { id: request.id, version: request.version },
-                      { onSuccess: () => navigate("/requests") },
-                    )
-                  }
-                >
-                  丢弃
-                </button>
-              </>
-            )}
-            {request.status === "IN_APPROVAL" && (
-              <Button
-                variant="ghost"
-                disabled={withdraw.isPending}
-                onClick={() =>
-                  withdraw.mutate({
-                    id: request.id,
-                    version: request.version,
-                    idempotencyKey: newIdempotencyKey(),
-                  })
-                }
-              >
-                撤回
-              </Button>
-            )}
-            {(request.status === "WITHDRAWN" || request.status === "DISCARDED") && (
-              <p className="text-sm text-muted">这张申请已经结束，不能再改动。</p>
-            )}
-          </div>
-        )}
-
-        {localError && (
-          <p className="mt-3 whitespace-pre-wrap rounded-sm border border-danger/30 bg-danger-bg px-3 py-2 text-sm text-danger">
-            {localError}
-          </p>
-        )}
-        <ErrorNote
-          error={
-            patch.error ?? replaceItems.error ?? submit.error ?? withdraw.error ?? discard.error
-          }
-        />
-      </Card>
-
-      <Card title="明细">
-        <Table head={["#", "名称", "规格", "数量", "单价", "金额"]}>
-          {detail.data.items.map((item) => (
-            <Row key={item.id}>
-              <Cell className="text-muted">{item.line_no}</Cell>
-              <Cell>{item.name}</Cell>
-              <Cell className="text-muted">{item.spec ?? "—"}</Cell>
-              <Cell className="text-right font-mono">{item.quantity}</Cell>
-              <Cell className="text-right font-mono">{formatFen(item.unit_price_fen)}</Cell>
-              <Cell className="text-right font-mono">{formatFen(item.amount_fen)}</Cell>
-            </Row>
-          ))}
-        </Table>
-        {detail.data.items.length === 0 && (
-          <p className="text-sm text-muted">还没有明细，点「编辑草稿」加几行。</p>
-        )}
-      </Card>
-
-      {/* 审批链进度（M6）：申请人也看得到 —— "卡在谁那里"是申请人最想知道的一件事。
-          草稿还没有审批流，后端会 404，所以只在提交过之后才查（见 useRequestFlow 的 retry:false）。 */}
-      {request && request.status !== "DRAFT" && (
-        <Card title="审批进度">
-          {flow.data ? (
-            <ApprovalTimeline
-              steps={flow.data.steps}
-              currentStepOrder={flow.data.current_step_order}
-            />
-          ) : (
-            <p className="text-sm text-muted">
-              {flow.isPending ? "加载中…" : "还没有审批链。"}
-            </p>
-          )}
-          {flow.data && (
-            <p className="mt-3 text-xs text-faint">
-              这份进度依据的是<b>提交那一刻</b>的策略（第 {flow.data.policy_version} 版）——
-              管理员后来改过阈值，也不会改变已经提交的单子。
-            </p>
-          )}
-        </Card>
-      )}
-
-      <Card title="时间线">
-        <ol className="space-y-3">
-          {detail.data.timeline.map((event) => (
-            <li key={event.id} className="flex gap-3 text-sm">
-              <span className="w-36 shrink-0 font-mono text-xs text-faint">
-                {event.created_at.slice(0, 19).replace("T", " ")}
-              </span>
-              <span className="text-body">
-                {EVENT_LABEL[event.event_type] ?? event.event_type}
-                {event.from_status && event.to_status && (
-                  <span className="ml-2 text-xs text-muted">
-                    {event.from_status} → {event.to_status}
-                  </span>
+          ⚠️ 目录条目按**实际渲染出来的分区**生成：草稿没有审批流，就不该有「审批进度」
+          这一条 —— 点过去什么都不动的目录比没有目录更糟。 */}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_180px]">
+        <div className="min-w-0 space-y-6">
+          <Card title="申请内容" id="section-content">
+            {!editing ? (
+              <div className="space-y-4">
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                  <Detail label="紧急程度" value={request.urgency === "URGENT" ? "加急" : "普通"} />
+                  <Detail label="金额" value={formatFen(request.amount_total_fen)} mono />
+                  <Detail label="创建时间" value={request.created_at.slice(0, 19).replace("T", " ")} />
+                  <Detail
+                    label="提交时间"
+                    value={
+                      request.submitted_at
+                        ? request.submitted_at.slice(0, 19).replace("T", " ")
+                        : "—"
+                    }
+                  />
+                </dl>
+                {request.reason && (
+                  <p className="text-sm text-body">说明：{request.reason}</p>
                 )}
-              </span>
-            </li>
-          ))}
-        </ol>
-        {detail.data.timeline.length === 0 && (
-          <p className="text-sm text-muted">还没有事件。</p>
-        )}
-      </Card>
+                {Object.keys(request.form_data ?? {}).length > 0 && (
+                  <div className="text-sm">
+                    <p className="text-muted">品类表单</p>
+                    <pre className="mt-1 overflow-x-auto rounded-md bg-section p-3 text-xs text-body">
+                      {JSON.stringify(request.form_data, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <Field label="标题">
+                  <Input
+                    value={title}
+                    onChange={(event) => setTitle(event.target.value)}
+                    required
+                    maxLength={200}
+                  />
+                </Field>
+                <Field label="说明">
+                  <Input
+                    value={reason}
+                    onChange={(event) => setReason(event.target.value)}
+                    maxLength={2000}
+                  />
+                </Field>
+
+                <div>
+                  <p className="text-sm font-medium text-body">明细</p>
+                  <div className="mt-2 space-y-2">
+                    {lines.map((line, index) => (
+                      <div key={index} className="flex flex-wrap items-end gap-2">
+                        <Field label="名称" className="min-w-40 flex-1">
+                          <Input
+                            value={line.name}
+                            onChange={(event) =>
+                              setLines((current) =>
+                                current.map((item, i) =>
+                                  i === index ? { ...item, name: event.target.value } : item,
+                                ),
+                              )
+                            }
+                            required
+                          />
+                        </Field>
+                        <Field label="规格" className="min-w-32">
+                          <Input
+                            value={line.spec}
+                            onChange={(event) =>
+                              setLines((current) =>
+                                current.map((item, i) =>
+                                  i === index ? { ...item, spec: event.target.value } : item,
+                                ),
+                              )
+                            }
+                          />
+                        </Field>
+                        <Field label="数量" className="w-24">
+                          <Input
+                            className="text-right"
+                            type="number"
+                            min={1}
+                            value={line.quantity}
+                            onChange={(event) =>
+                              setLines((current) =>
+                                current.map((item, i) =>
+                                  i === index
+                                    ? { ...item, quantity: event.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                            required
+                          />
+                        </Field>
+                        <Field label="单价（元）" className="w-32">
+                          <Input
+                            className="text-right"
+                            value={line.unitPriceYuan}
+                            onChange={(event) =>
+                              setLines((current) =>
+                                current.map((item, i) =>
+                                  i === index
+                                    ? { ...item, unitPriceYuan: event.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                            required
+                          />
+                        </Field>
+                        <button
+                          type="button"
+                          disabled={lines.length === 1}
+                          onClick={() =>
+                            setLines((current) => current.filter((_, i) => i !== index))
+                          }
+                          className="pb-2 text-xs text-muted hover:text-danger disabled:opacity-30"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLines([
+                        ...lines,
+                        { name: "", spec: "", quantity: "1", unitPriceYuan: "" },
+                      ])
+                    }
+                    className="mt-3 text-sm text-body hover:underline"
+                  >
+                    + 加一行
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <Button
+                    onClick={saveEdits}
+                    disabled={patch.isPending || replaceItems.isPending}
+                  >
+                    {patch.isPending || replaceItems.isPending ? "保存中…" : "保存"}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setEditing(false)}
+                    className="text-sm text-muted hover:underline"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!editing && (
+              <div className="mt-5 flex items-center gap-3 border-t border-line pt-4">
+                {request.status === "DRAFT" && (
+                  <>
+                    <Button variant="ghost" onClick={startEditing}>
+                      编辑草稿
+                    </Button>
+                    <Button
+                      disabled={submit.isPending}
+                      onClick={() =>
+                        submit.mutate({
+                          id: request.id,
+                          version: request.version,
+                          idempotencyKey: submitKey,
+                        })
+                      }
+                    >
+                      提交审批
+                    </Button>
+                    <button
+                      className="text-sm text-muted hover:text-danger"
+                      disabled={discard.isPending}
+                      onClick={() =>
+                        discard.mutate(
+                          { id: request.id, version: request.version },
+                          { onSuccess: () => navigate("/requests") },
+                        )
+                      }
+                    >
+                      丢弃
+                    </button>
+                  </>
+                )}
+                {request.status === "IN_APPROVAL" && (
+                  <Button
+                    variant="ghost"
+                    disabled={withdraw.isPending}
+                    onClick={() =>
+                      withdraw.mutate({
+                        id: request.id,
+                        version: request.version,
+                        idempotencyKey: newIdempotencyKey(),
+                      })
+                    }
+                  >
+                    撤回
+                  </Button>
+                )}
+                {(request.status === "WITHDRAWN" || request.status === "DISCARDED") && (
+                  <p className="text-sm text-muted">这张申请已经结束，不能再改动。</p>
+                )}
+              </div>
+            )}
+
+            {localError && (
+              <p className="mt-3 whitespace-pre-wrap rounded-md border border-danger/30 bg-danger-bg px-3 py-2 text-sm text-danger">
+                {localError}
+              </p>
+            )}
+            <ErrorNote
+              error={
+                patch.error ?? replaceItems.error ?? submit.error ?? withdraw.error ?? discard.error
+              }
+            />
+          </Card>
+
+          <Card
+            title="明细"
+            id="section-items"
+            description={`${detail.data.items.length} 行 · 金额由后端按明细重算，客户端传的总额不作数`}
+          >
+            <Table head={["#", "名称", "规格", "数量", "单价", "金额"]}>
+              {detail.data.items.map((item) => (
+                <Row key={item.id}>
+                  <Cell className="text-muted">{item.line_no}</Cell>
+                  <Cell>{item.name}</Cell>
+                  <Cell className="text-muted">{item.spec ?? "—"}</Cell>
+                  <Cell className="text-right font-mono">{item.quantity}</Cell>
+                  <Cell className="text-right font-mono">{formatFen(item.unit_price_fen)}</Cell>
+                  <Cell className="text-right font-mono">{formatFen(item.amount_fen)}</Cell>
+                </Row>
+              ))}
+            </Table>
+            {detail.data.items.length === 0 && (
+              <p className="text-sm text-muted">还没有明细，点「编辑草稿」加几行。</p>
+            )}
+          </Card>
+
+          {/* 审批链进度（M6）：申请人也看得到 —— "卡在谁那里"是申请人最想知道的一件事。
+              草稿还没有审批流，后端会 404，所以只在提交过之后才查（见 useRequestFlow 的 retry:false）。 */}
+          {request && request.status !== "DRAFT" && (
+            <Card
+              title="审批进度"
+              id="section-approval"
+              description="依据的是提交那一刻的策略快照 —— 管理员后来改过阈值，也不会改变已经提交的单子。"
+            >
+              {flow.data ? (
+                <ApprovalTimeline
+                  steps={flow.data.steps}
+                  currentStepOrder={flow.data.current_step_order}
+                />
+              ) : (
+                <p className="text-sm text-muted">
+                  {flow.isPending ? "加载中…" : "还没有审批链。"}
+                </p>
+              )}
+              {flow.data && (
+                <p className="mt-3 text-xs text-faint">
+                  这一版策略是第 {flow.data.policy_version} 版。
+                </p>
+              )}
+            </Card>
+          )}
+
+          {/* 附件（M9）：报价单、合同、发票。草稿阶段也能传 —— 报价单往往
+              在提交前就先拿到了，没有理由卡到提交之后。 */}
+          <Card
+            title="附件"
+            id="section-attachments"
+            description="PDF / JPG / PNG，单个不超过 10 MB。文件名与内容都会校验，改扩展名没有用。"
+          >
+            <AttachmentSection requestId={request.id} />
+          </Card>
+
+          <Card
+            title="时间线"
+            id="section-timeline"
+            description={`${detail.data.timeline.length} 条事件 · 只追加，永不修改`}
+          >
+            <RequestTimeline events={detail.data.timeline} />
+          </Card>
+        </div>
+
+        <PageToc
+          items={[
+            { id: "section-content", label: "申请内容" },
+            { id: "section-items", label: `明细（${detail.data.items.length}）` },
+            ...(request.status === "DRAFT"
+              ? []
+              : [{ id: "section-approval", label: "审批进度" }]),
+            { id: "section-attachments", label: "附件" },
+            { id: "section-timeline", label: `时间线（${detail.data.timeline.length}）` },
+          ]}
+        />
+      </div>
     </>
   );
 }
