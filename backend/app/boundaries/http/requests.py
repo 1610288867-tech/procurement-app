@@ -29,6 +29,7 @@ from app.boundaries.deps import CurrentUser, SessionDep
 from app.boundaries.http.approvals import approval_coordinator
 from app.database import SessionFactory
 from app.errors import BusinessError
+from app.infrastructure.repositories.budget_repo import BudgetRepository
 from app.infrastructure.repositories.catalog_repo import CatalogRepository
 from app.infrastructure.repositories.event_repo import RequestEventRepository
 from app.infrastructure.repositories.purchase_repo import PurchaseRepository
@@ -59,6 +60,7 @@ def purchase_coordinator(session: SessionDep) -> PurchaseCoordinator:
             claim_session_factory=SessionFactory, session=session
         ),
         uow=session,
+        budgets=BudgetRepository(session),
         approval=approval_coordinator(session),
     )
 

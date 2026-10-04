@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -171,6 +172,23 @@ def main() -> int:
     ).json()
     dept_id = department["id"]
     cat_id = category["id"]
+
+    # M7 起提交必须有预算：没有预算行 = 计划外 → 422（业务规则第 1 条）。
+    # 额度给足（100 万元），因为这个脚本验的是审批链，不是预算不足。
+    budget = admin.post(
+        "/api/v1/admin/budgets",
+        json={
+            "department_id": dept_id,
+            "category_id": cat_id,
+            "year": datetime.now(UTC).year,
+            "amount_fen": 100_000_000,
+        },
+    ).json()
+    check(
+        "id" in budget and "error" not in budget,
+        "给自检品类配一条预算（M7 起提交必须有预算）",
+        f"额度 {budget.get('amount_total_fen')} 分",
+    )
 
     requester_name = f"t-smoke-req-{stamp}"
     users: list[str] = []
@@ -335,6 +353,18 @@ def main() -> int:
         empty_dept = admin.post(
             "/api/v1/admin/departments", json={"name": "M6空部门", "code": f"TDEP-E{stamp}"}
         ).json()
+        # 这个空部门也要有预算：否则提交会先撞上"计划外 → 422 NO_BUDGET"，
+        # 就验不到本意要验的那条（"某一级没人可审 → 422 NO_APPROVER"）。
+        # 预算检查排在审批链之前是刻意的：钱比人先算。
+        admin.post(
+            "/api/v1/admin/budgets",
+            json={
+                "department_id": empty_dept["id"],
+                "category_id": cat_id,
+                "year": datetime.now(UTC).year,
+                "amount_fen": 10_000_000,
+            },
+        )
         lonely_name = f"t-smoke-lonely-{stamp}"
         users.append(make_user(lonely_name, ["REQUESTER"], empty_dept["id"]))
         lonely = login(lonely_name)
@@ -430,7 +460,7 @@ def cleanup(
 ) -> dict[str, int]:
     """删掉本次自检造出来的数据。删完回查残留。"""
     sys.path.insert(0, ".")
-    from sqlalchemy import delete, func, select, text  # noqa: PLC0415
+    from sqlalchemy import delete, func, or_, select, text  # noqa: PLC0415
 
     from app.database import SessionFactory  # noqa: PLC0415
     from app.infrastructure.records.approval import (  # noqa: PLC0415
@@ -439,6 +469,7 @@ def cleanup(
     )
     from app.infrastructure.records.auth import UserRecord  # noqa: PLC0415
     from app.infrastructure.records.catalog import (  # noqa: PLC0415
+        BudgetRecord,
         DepartmentRecord,
         PurchaseCategoryRecord,
     )
@@ -451,9 +482,13 @@ def cleanup(
 
     counts: dict[str, int] = {}
     ids = [uuid.UUID(value) for value in request_ids]
-    # 账号名大小写不敏感地匹配：登录会 lower()，所以库里可能存着混大小写的旧残留
-    # （脚本早期版本就是这么写进去的），用精确 IN 会漏掉它们。
-    lowered = [name.lower() for name in usernames]
+    department_ids = [uuid.UUID(department_id)] + [
+        uuid.UUID(value) for value in (extra_departments or [])
+    ]
+    # 账号按**前缀**删（`t-smoke-%`），不按本次造出来的名字：
+    # 脚本中途失败时不会走到清理，上一轮的账号会留下来，
+    # 而下面的"残留账号"回查是按同一个前缀数的 —— 不按前缀删就永远清不干净。
+    del usernames  # 名字留着只为可读性；判据统一用前缀
 
     async def run() -> dict[str, int]:
         async with SessionFactory() as session:
@@ -462,24 +497,37 @@ def cleanup(
                 (
                     await session.scalars(
                         select(UserRecord.id).where(
-                            func.lower(UserRecord.username).in_(lowered)
+                            func.lower(UserRecord.username).like("t-smoke-%")
                         )
                     )
                 ).all()
             )
-            if ids:
-                for name, model, column in (
-                    ("审批任务", ApprovalTaskRecord, ApprovalTaskRecord.request_id),
-                    ("审批流", ApprovalFlowRecord, ApprovalFlowRecord.request_id),
-                    ("事件", RequestEventRecord, RequestEventRecord.request_id),
-                    ("明细", PurchaseItemRecord, PurchaseItemRecord.request_id),
-                ):
-                    outcome = await session.execute(delete(model).where(column.in_(ids)))
-                    result[name] = outcome.rowcount or 0
-                outcome = await session.execute(
-                    delete(PurchaseRequestRecord).where(PurchaseRequestRecord.id.in_(ids))
+            # 要删的申请 = 本轮造的 **+ 任何由 `t-smoke-%` 账号提交的**。
+            # 后者是为了"上一轮中途失败"的情况：那些申请会挡住账号删除
+            # （`purchase_requests.requester_id`），而残留回查正是按账号前缀数的 ——
+            # 不一次清干净，脚本第二次跑就永远说自己"没清干净"。
+            doomed_requests = select(PurchaseRequestRecord.id).where(
+                or_(
+                    PurchaseRequestRecord.id.in_(ids or [None]),
+                    PurchaseRequestRecord.requester_id.in_(user_ids or [None]),
                 )
-                result["申请"] = outcome.rowcount or 0
+            )
+            for name, model, column in (
+                ("审批任务", ApprovalTaskRecord, ApprovalTaskRecord.request_id),
+                ("审批流", ApprovalFlowRecord, ApprovalFlowRecord.request_id),
+                ("事件", RequestEventRecord, RequestEventRecord.request_id),
+                ("明细", PurchaseItemRecord, PurchaseItemRecord.request_id),
+            ):
+                outcome = await session.execute(
+                    delete(model).where(column.in_(doomed_requests))
+                )
+                result[name] = outcome.rowcount or 0
+            outcome = await session.execute(
+                delete(PurchaseRequestRecord).where(
+                    PurchaseRequestRecord.id.in_(doomed_requests)
+                )
+            )
+            result["申请"] = outcome.rowcount or 0
             if user_ids:
                 outcome = await session.execute(
                     delete(IdempotencyRecord).where(IdempotencyRecord.actor_id.in_(user_ids))
@@ -497,15 +545,23 @@ def cleanup(
                     delete(UserRecord).where(UserRecord.id.in_(user_ids))
                 )
                 result["账号"] = outcome.rowcount or 0
+            # M7：预算引用品类与部门（都是 RESTRICT），必须**先于两者**删；
+            # 流水随上面删申请时级联带走。
+            outcome = await session.execute(
+                delete(BudgetRecord).where(
+                    or_(
+                        BudgetRecord.category_id == uuid.UUID(category_id),
+                        BudgetRecord.department_id.in_(department_ids),
+                    )
+                )
+            )
+            result["预算"] = outcome.rowcount or 0
             outcome = await session.execute(
                 delete(PurchaseCategoryRecord).where(
                     PurchaseCategoryRecord.id == uuid.UUID(category_id)
                 )
             )
             result["品类"] = outcome.rowcount or 0
-            department_ids = [uuid.UUID(department_id)] + [
-                uuid.UUID(value) for value in (extra_departments or [])
-            ]
             outcome = await session.execute(
                 delete(DepartmentRecord).where(DepartmentRecord.id.in_(department_ids))
             )

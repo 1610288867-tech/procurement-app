@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.domain.enums import BUDGET_TX_KINDS
 from app.infrastructure.records.base import Base
 
 
@@ -145,4 +146,54 @@ class BudgetRecord(Base):
     amount_spent: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class BudgetTransactionRecord(Base):
+    """预算流水（M7）。**只追加** —— 这个聚合的账本。
+
+    ============================ 为什么必须有它 ============================
+    `budgets` 上那三个数字只说明"现在是多少"，说不清"为什么是这个数"。
+    少了流水，"这 100 元是什么时候、因为哪张单子放掉的"就永远查不出来 ——
+    而**预留与实付的差额**恰恰是最容易漏记的一笔（漏了不报错，只是额度虚低）。
+
+    ============================ 两条约束各挡什么 ============================
+        UNIQUE(request_id, kind)   同一笔申请**最多一条** RESERVE / RELEASE / SPEND。
+                                   它让"因重试被预留两次"直接撞唯一索引报错，
+                                   而不是悄悄多占一份预算（幂等表挡不住这种重试）。
+        amount > 0                 金额为 0 的流水没有意义，只会让对账多出一行噪音。
+
+    `created_at` 由**应用侧**写入（不用 `server_default=now()`）：`now()` 是事务开始时间，
+    同一事务里写的多条流水会拿到相同时间戳，"按时间对账"就退化成随机顺序 ——
+    事件流在 M6 踩过同一个坑（见 `event_repo.append` 的说明）。
+    """
+
+    __tablename__ = "budget_transactions"
+    __table_args__ = (
+        UniqueConstraint("request_id", "kind", name="uq_budget_tx_request_kind"),
+        CheckConstraint(
+            "kind IN (" + ", ".join(f"'{kind}'" for kind in BUDGET_TX_KINDS) + ")",
+            name="ck_budget_tx_kind_known",
+        ),
+        CheckConstraint("amount > 0", name="ck_budget_tx_amount_positive"),
+        # 对账主查询：按预算看流水
+        Index("ix_budget_tx_budget_created", "budget_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    # RESTRICT：还有流水的预算行不许被删 —— 账本不能凭空少一截
+    budget_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("budgets.id", ondelete="RESTRICT"), nullable=False
+    )
+    # CASCADE：流水是申请的从属数据（同 request_events 的处理）
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("purchase_requests.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 单位：分。永远是**正数**，方向由 kind 表达
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )

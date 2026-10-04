@@ -194,6 +194,13 @@ export type Budget = {
   amount_spent_fen: number;
 };
 
+/** 看板行 = 预算 + 部门名 + 品类名。
+ *  名字由后端带出来：财务没有"列出全部部门 / 品类"的权限（那是管理员接口）。 */
+export type BudgetBoardRow = Budget & {
+  department_name: string;
+  category_name: string;
+};
+
 /** 采购申请状态（M5 只用到这四个；后九个状态随 M6–M9 加）。 */
 export type RequestStatus =
   | "DRAFT"
@@ -337,6 +344,23 @@ export type DecisionResult = {
   step_completed: boolean | null;
   current_step_order: number | null;
   comment: string | null;
+};
+
+// ------------------------------------------------ 预算看板（M7）
+
+/** 预算流水类型。三类合起来必须能还原预算的每一次变动；
+ *  `RELEASE` 有两种来源：驳回/撤回的全额释放，以及付款时"预留 − 实付"的差额。 */
+export type BudgetTransactionKind = "RESERVE" | "RELEASE" | "SPEND";
+
+export type BudgetTransaction = {
+  id: string;
+  budget_id: string;
+  request_id: string;
+  request_code: string;
+  kind: BudgetTransactionKind;
+  /** 永远是正数，方向由 kind 表达 */
+  amount_fen: number;
+  created_at: string;
 };
 
 // ------------------------------------------------------------------ 接口
@@ -501,4 +525,21 @@ export const api = {
   /** 审批链进度：申请人与审批人都能看（卡在谁那里一眼可见）。 */
   getRequestFlow: (requestId: string) =>
     request<ApprovalFlow>(`/api/v1/approvals/requests/${requestId}/flow`),
+
+  // ------------------------------------------------ 预算看板（M7，只读）
+  /** 全部预算（财务 / 管理员）。**只读** —— 改预算仍然只走 /admin/budgets。 */
+  listBudgets: (params: { year?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.year !== undefined) query.set("year", String(params.year));
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<BudgetBoardRow[]>(`/api/v1/budgets${suffix}`);
+  },
+  /** 预算流水（新→旧），带申请单号，可直接当对账依据看。 */
+  listBudgetTransactions: (params: { budgetId?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.budgetId) query.set("budget_id", params.budgetId);
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<BudgetTransaction[]>(`/api/v1/budgets/transactions${suffix}`);
+  },
 };

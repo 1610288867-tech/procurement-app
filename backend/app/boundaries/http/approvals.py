@@ -33,6 +33,7 @@ from app.application.ports import ApprovalTaskView
 from app.boundaries.deps import CurrentUser, SessionDep
 from app.database import SessionFactory
 from app.infrastructure.repositories.approval_repo import ApprovalRepository
+from app.infrastructure.repositories.budget_repo import BudgetRepository
 from app.infrastructure.repositories.catalog_repo import CatalogRepository
 from app.infrastructure.repositories.event_repo import RequestEventRepository
 from app.infrastructure.repositories.purchase_repo import PurchaseRepository
@@ -58,6 +59,7 @@ def approval_coordinator(session: SessionDep) -> ApprovalCoordinator:
         users=UserRepository(session),
         catalog=CatalogRepository(session),
         uow=session,
+        budgets=BudgetRepository(session),
     )
 
 
@@ -323,6 +325,7 @@ async def get_flow(
             claim_session_factory=SessionFactory, session=session
         ),
         uow=session,
+        budgets=BudgetRepository(session),
     )
     await purchase.get_request_detail(
         request_id=request_id,

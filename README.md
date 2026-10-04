@@ -16,7 +16,6 @@
 | 预算的并发预留与释放（条件更新，不是先查再写） | M7 |
 | 三单匹配（订单 / 收货 / 发票对账） | M10 |
 | 幂等、乐观锁、事件流、只追加审计 | M5 起贯穿 |
-
 ## 仓库组成
 
 | 目录 / 文件 | 作用 |
@@ -185,6 +184,7 @@ procurement-app/
 │   │   │   ├── rules.py            受限规则 DSL 求值 + 策略语义校验（M2）
 │   │   │   ├── permissions.py      数据级权限：按角色算可见范围（M3）
 │   │   │   ├── approval_engine.py  审批链解析、候选人解析、职责分离纯函数（M6）
+│   │   │   ├── budget_policy.py    可用额、结转差额、预算年度（M7）
 │   │   │   ├── state_machine.py    主单状态迁移表（M5）
 │   │   │   └── enums.py / events.py / purchase.py / org.py
 │   │   ├── application/        用例编排 —— 事务边界在这一层
@@ -198,11 +198,11 @@ procurement-app/
 │   │       ├── security.py       口令哈希（Argon2id）+ JWT 双令牌（M3）
 │   │       ├── login_throttle.py 登录限流（进程内字典，不引 Redis）
 │   │       ├── records/          ORM 映射（base / catalog / auth / purchase / approval）
-│   │       └── repositories/     数据访问（catalog / user / purchase / approval / event / idempotency）
-│   ├── migrations/             Alembic（6 个：suppliers → master data → users → budget CHECK → requests → approvals）
+│   │       └── repositories/     数据访问（catalog / user / purchase / approval / budget / event / idempotency）
+│   ├── migrations/             Alembic（7 个：suppliers → master data → users → budget CHECK → requests → approvals → budget_transactions）
 │   ├── tests/                  pytest（unit 默认档 / integration 分档）
 │   ├── scripts/seed.py         演示数据（幂等，可反复跑）
-│   ├── scripts/m6_smoke.py     对着真实服务打 18 项 HTTP 验收（跑完自清理）
+│   ├── scripts/m6_smoke.py     对着真实服务打 19 项 HTTP 验收（跑完自清理）
 │   ├── scripts/testdata_cleanup.py  清测试前缀数据（`--scope page|all`，`--dry-run` 可选）
 │   ├── pyproject.toml          pytest 分档、ruff、mypy 配置
 │   └── requirements.txt        唯一的依赖事实来源
@@ -213,7 +213,7 @@ procurement-app/
 │       ├── components/         跨页组件（ui.tsx 界面原语 / RequireAuth.tsx 路由守卫 / ApprovalTimeline.tsx 审批链三态时间轴）
 │       ├── lib/money.ts        金额换算的唯一入口（元 ⇄ 分）
 │       ├── lib/idempotency.ts  幂等键生成（提交/撤回用）
-│       ├── pages/              页面（Home / Login / SupplierList / requester 三个申请页 / approver 待办与任务详情 / admin 三个管理页）
+│       ├── pages/              页面（Home / Login / SupplierList / requester 三个申请页 / approver 待办与任务详情 / finance 预算看板 / admin 三个管理页）
 │       ├── router.tsx          路由表
 │       ├── index.css           设计令牌（Tailwind v4 @theme，换风格只动这一个文件）
 │       └── App.tsx             外壳：QueryClient + Router + 侧边栏布局
@@ -230,8 +230,8 @@ procurement-app/
 │   ├── run-web.ps1             启动前端（Vite）
 │   ├── seed.ps1                灌入演示数据（部门 / 品类 / 供应商 / 预算 / 账号）
 │   ├── 启动-*.bat 等           上面几个脚本的双击包装（只转发，不重复实现）
-│   ├── 浏览器自检.mjs          零依赖：起一个无窗口 Edge，把关键界面真跑一遍（11 项）
-│   └── m6-页面实测.mjs         审批链的浏览器实测（19 项，含截图）
+│   ├── 浏览器自检.mjs          零依赖：起一个无窗口 Edge，把关键界面真跑一遍（12 项）
+│   └── m6-页面实测.mjs         审批链的浏览器实测（20 项，含截图）
 ├── 启动项目.bat                双击一键启动：Docker + 数据库 + 前后端 + 打开浏览器
 ├── 浏览器测试-启动说明.txt     四步启动顺序速查（含常见问题）
 ├── PROGRESS.md                 阶段验收清单与工作进度
@@ -262,7 +262,7 @@ procurement-app/
 | M4 | 前端设计系统（设计令牌 + 侧边栏外壳 + 共享界面原语） | ✅ 完成（2026-10-02） |
 | M5 | 采购申请（草稿 / 明细 / 提交 / 撤回 + 幂等） | ✅ 完成（2026-10-02） |
 | **M6** | **审批引擎**（动态多级审批、规则 6 顺序门控、认领与驳回） | ✅ 完成（2026-10-03）★ |
-| **M7** | **预算并发预留** | ⬜ ★ 核心 |
+| **M7** | **预算并发预留**（条件更新 + 只追加流水 + 只读看板） | ✅ 完成（2026-10-04）★ |
 | M8 | 回归验收（不含新功能：整体复跑一遍历史验收） | ⬜ |
 | M9 | 附件与时间线 | ⬜ |
 | M10 | 履约链（询价 → 定标 → 订单 → 收货 → 发票 → 付款） | ⬜ |
@@ -281,6 +281,11 @@ procurement-app/
 > 后面几级的审批人**看不到**待办，直接调接口也会被 403 挡住。
 > 演示用 `dept-manager`（李主管）登录；或签任务要先「认领」才出现「通过 / 驳回」。
 >
+> 预算（M7）的入口：**提交时**自动预留（该部门 × 品类 × 年度**没有预算行 = 计划外 → 422**），
+> 驳回与撤回释放，付款结转时把"预留 − 实付"的差额**显式释放**。
+> 以 `finance`（钱财务）或 `admin` 登录可看「预算看板」——只读的总额 / 已预留 / 已花 / 可用 + 流水；
+> **改**预算仍然只走「预算」管理页（看钱与改钱分开两个权限口径）。
+>
 > **M6 收尾后又补了两类修复**（2026-10-03，内控对账时发现）：① **自审自批**改成立体三层拦截；
 > ② **主数据接口**（供应商 / 部门 / 品类 / 预算）从匿名可读改为**一律要求登录**。
 > 依据与逐条对账见 [docs/采购内控对照.md](docs/采购内控对照.md)，缺口清单见 [PROGRESS.md](PROGRESS.md)。
@@ -291,7 +296,8 @@ procurement-app/
 
 ## 业务规则（M0 定稿 8 条，2026-10-03 补至 10 条）
 
-1. **预算**提交时预留，驳回/撤回时释放，付款时按**实付**转已花并**显式释放差额**
+1. **预算**提交时预留，驳回/撤回时释放，付款时按**实付**转已花并**显式释放差额**；
+   **超预算或没有预算行（计划外）→ 直接 422**，先调 / 配预算再重新提交
 2. **按金额分级审批**，规则存在品类上，**改规则不改代码**
 3. 金额超比价线需至少 **3 家有效报价**才能定标
 4. 只能用合格且未禁用的供应商（资质过期自动不可选）
@@ -344,6 +350,7 @@ procurement-app/
 | `GET /api/v1/suppliers`、`/departments`、`/categories`、`/categories/{id}`、`/budgets/mine` | **登录用户**（只读；`/budgets/mine` 的部门只从登录态推导，没有部门的账号返回空列表） |
 | `POST /api/v1/auth/refresh`、`/logout`、`GET /me` | 登录用户 |
 | `/api/v1/requests/*`、`/api/v1/approvals/*` | 登录用户（**创建与提交申请还要求账号有部门**；具体行是否可见由数据级权限决定：范围外 404、可见但无权 403） |
+| `/api/v1/budgets`、`/api/v1/budgets/transactions` | **`FINANCE` 或 `ADMIN`**（**只读**看板；改预算走 `/admin/budgets`，仅 `ADMIN`） |
 | `/api/v1/admin/*` | 仅 `ADMIN` |
 
 > **主数据接口也要求登录**是 2026-10-03 的改动：它们原来匿名可读，其中
@@ -383,8 +390,12 @@ M6 已完成审批引擎；其余业务接口按阶段逐个补齐。
 | `POST /api/v1/approvals/tasks/{id}/claim`、`/approve`、`/reject` | 认领（或签）、通过、驳回 | 登录 + 是当前级候选人 | ✅ M6 |
 | `GET /api/v1/approvals/requests/{id}/flow` | 审批链进度（谁已批、现在轮到谁） | 登录 + 数据可见 | ✅ M6 |
 | `POST /api/v1/approvals/tasks/{id}/delegate` | 委托他人 | — | ❌ 不做（2026-10-03 定稿，见业务规则第 9 条） |
+| `GET /api/v1/budgets`、`/api/v1/budgets/transactions` | 预算看板与流水（**只读**，带部门 / 品类名与申请单号） | **`FINANCE` / `ADMIN`** | ✅ M7 |
 | `/api/v1/sourcing/*`、`/orders/*`、`/receipts/*`、`/payments/*` | 询价、定标、订单、收货、付款 | 按角色 | ⬜ M10 |
 | `/api/v1/chat/*` | 制度问答（流式） | 登录 | ⬜ M11 |
+
+> **预算有两个只读接口，没有一个写接口**：改预算仍然只走 `POST /api/v1/admin/budgets`。
+> "看钱"（财务 + 管理员）与"改钱"（仅管理员）是两个可以分别收紧的口径。
 
 认证用 **JWT 双令牌放 httpOnly Cookie**（access 15 分钟 / refresh 7 天，
 refresh 的 `Path` 限定到 `/api/v1/auth/refresh`）；登录连续失败 5 次返回 **429**。
@@ -436,11 +447,15 @@ node scripts\浏览器自检.mjs
 
 它会自己起一个**无窗口** Edge（独立配置目录，不碰你自己开着的那份），连它的调试
 接口，在真实浏览器内核里走一遍：路由守卫、按角色渲染的菜单、无权限提示页、
-登录页的显示/隐藏密码开关、新建品类、审批策略 422 的原文、预算的元⇄分。
-退出码 0 = 全过。
+登录页的显示/隐藏密码开关、新建品类、审批策略 422 的原文、预算的元⇄分、
+以及 M7 的预算看板。**退出码 0 = 12 项全过。**
 
 **零依赖**——只用 Node 自带的 `fetch` 和 `WebSocket`，不需要装 Playwright 之类的库。
-注意 C 组会往开发库写一条 `SELFCHECK-*` 前缀的品类和一条预算（方便你认出来）。
+注意 C 组会往开发库写一条 `SELFCHECK-*` 前缀的品类和一条配套预算（方便你认出来）；
+跑完它会把清理命令打在屏幕上。
+
+审批链另有一个浏览器实测脚本（`node scripts\m6-页面实测.mjs`，20 项 + 截图，**需要
+自己先起一个带 `--remote-debugging-port=9222` 的 Edge**）。
 
 ### 三条分层自查（提交前跑，应全部无输出）
 
@@ -467,14 +482,16 @@ Select-String -Path backend\app\infrastructure\repositories\*.py -Pattern "\.com
 | `pytest`（M5 收尾） | ✅ **148 passed**（unit 90 + integration 58，含并发同键提交与数据级权限） |
 | `pytest`（M6 收尾） | ✅ **187 passed**（unit 110 + integration 77，含会签/或签、越级 403、并发推进指针、策略可达性） |
 | `pytest`（M6 之后的内控修复） | ✅ **198 passed**（+11 条：SoD 纯函数 5 + 集成 5、主数据接口收口 1；见 PROGRESS.md「待修：内控缺口」） |
-| `scripts\m6_smoke.py`（对着真实服务打 HTTP） | ✅ **18/18**（四档金额对照表、越级 403、驳回、SOURCING、缺人 422、跑完自清理） |
-| `node scripts\m6-页面实测.mjs`（浏览器实测） | ✅ **19/19**（待办列表、任务详情、认领→通过、时间轴三态，含截图） |
-| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 267.72 KB（gzip 82.90） |
-| `node scripts\浏览器自检.mjs`（无窗口 Edge + CDP） | ✅ 11 项全过（含"侧边栏角色与 `/auth/me` 一致"） |
-| `ruff` / `mypy` | ✅ All checks passed / 46 files, no issues |
+| `pytest`（M7 收尾） | ✅ **222 passed**（unit 129 + integration 93，含预算并发、失败回滚、幂等不重复预留、结转差额释放、计划外 422、看板权限） |
+| `scripts\m6_smoke.py`（对着真实服务打 HTTP） | ✅ **19/19**（四档金额对照表、越级 403、驳回、SOURCING、缺人 422、预算配置，跑完自清理） |
+| `node scripts\m6-页面实测.mjs`（浏览器实测） | ✅ **20/20**（待办列表、任务详情、认领→通过、时间轴三态，含截图） |
+| `tsc --noEmit` / `vitest run` / `npm run build` | ✅ 无错误 / 14 passed / 272.81 KB（gzip 84.17） |
+| `node scripts\浏览器自检.mjs`（无窗口 Edge + CDP） | ✅ **12 项全过**（含"侧边栏角色与 `/auth/me` 一致"、M7 预算看板） |
+| 并发预留用例连跑 20 次 | ✅ **20/20** 稳定（`test_concurrent_submits_never_overdraw`） |
+| `ruff` / `mypy` | ✅ All checks passed / 48 files, no issues |
 | 三条分层自查 | ✅ 全部无输出 |
 
-> 上面的数字是**实跑记录**（最近一次：2026-10-03，全量 `pytest -m ""` → 198 passed in 41.51s）。
+> 上面的数字是**实跑记录**（最近一次：2026-10-04，全量 `pytest -m ""` → 222 passed）。
 > 测试脚本会往开发库写带前缀的数据，跑完用
 > `cd backend; .venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all` 清掉
 > （`--dry-run` 可以先看要删什么）。

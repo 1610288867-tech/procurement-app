@@ -51,7 +51,7 @@ from app.infrastructure.records.purchase import (
     RequestEventRecord,
 )
 from app.main import app
-from tests.conftest import Account, UserFactory, login_as
+from tests.conftest import Account, UserFactory, create_budget, login_as
 
 pytestmark = pytest.mark.integration
 
@@ -82,6 +82,7 @@ class World:
     def __init__(self) -> None:
         self.departments: list[uuid.UUID] = []
         self.categories: list[uuid.UUID] = []
+        self.budgets: list[uuid.UUID] = []
         self.requests: list[uuid.UUID] = []
         self.actors: list[uuid.UUID] = []
         # 下面这些在 fixture 里填
@@ -103,6 +104,24 @@ class World:
         client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
         await login_as(client, account)
         return client, account
+
+    async def budget_for(
+        self, category_id: str, *, amount_fen: int = 100_000_000
+    ) -> dict:
+        """给某个品类补一条今年的预算。
+
+        M7 起**提交必须有预算**（没有预算行 = 计划外 → 422），
+        所以用例临时造的新品类也要配一条，否则提交会被预算拦住 ——
+        那条用例验的就不是审批了。
+        """
+        budget = await create_budget(
+            self.admin_client,
+            department_id=self.department["id"],
+            category_id=category_id,
+            amount_fen=amount_fen,
+        )
+        self.budgets.append(uuid.UUID(budget["id"]))
+        return budget
 
     async def purge(self) -> None:
         """按外键顺序清理。
@@ -148,6 +167,12 @@ class World:
                         ApprovalTaskRecord.decided_by.in_(self.actors)
                     )
                 )
+            if self.budgets:
+                # 预算要在**品类与部门之前**删：budgets 对这两张表都是 RESTRICT
+                # （M7 起用例会造预算；流水则由上面删申请时级联带走）。
+                await session.execute(
+                    delete(BudgetRecord).where(BudgetRecord.id.in_(self.budgets))
+                )
             if self.categories:
                 await session.execute(
                     delete(PurchaseCategoryRecord).where(
@@ -160,11 +185,7 @@ class World:
                 # 引用 departments 的一共四处：
                 #   users.department_id / budgets.department_id /
                 #   purchase_requests.department_id / departments.parent_id
-                await session.execute(
-                    delete(BudgetRecord).where(
-                        BudgetRecord.department_id.in_(self.departments)
-                    )
-                )
+                # （预算那一条已在上面按 id 删掉）
                 # 解绑仍挂在待删部门上的测试账号（顺序不保证，置空比赌它删干净稳）
                 await session.execute(
                     delete(UserRecord).where(
@@ -218,6 +239,16 @@ async def world(
         dept_id = uuid.UUID(department["id"])
         state.requester, state.requester_account = await state.make([ROLE_REQUESTER], dept_id)
         state.manager, state.manager_account = await state.make(["DEPT_MANAGER"], dept_id)
+        # M7 起提交必须有预算（没有预算行 = 计划外 → 422）。
+        # 额度定得比任何一条用例的申请都大：这里验的是审批，不是预算不足 ——
+        # 预算边界由 `tests/test_api_budget.py` 专门去撞。
+        budget = await create_budget(
+            admin_client,
+            department_id=department["id"],
+            category_id=category["id"],
+            amount_fen=100_000_000,
+        )
+        state.budgets.append(uuid.UUID(budget["id"]))
         yield state
     finally:
         await state.purge()
@@ -483,6 +514,7 @@ async def test_all_mode_does_not_assign_a_task_to_the_requester(world: World) ->
         )
     ).json()
     world.categories.append(uuid.UUID(category["id"]))
+    await world.budget_for(category["id"])
 
     others = [await world.make(["DEPT_MANAGER"], department_id) for _ in range(2)]
 
@@ -647,6 +679,7 @@ async def test_all_mode_creates_one_task_per_person_and_needs_all(
         )
     ).json()
     world.categories.append(uuid.UUID(category["id"]))
+    await world.budget_for(category["id"])
 
     heads = [await world.make(["DEPT_HEAD"], department_id) for _ in range(3)]
 
@@ -792,6 +825,7 @@ async def test_concurrent_approvals_of_one_step_advance_only_one_step(
         )
     ).json()
     world.categories.append(uuid.UUID(category["id"]))
+    await world.budget_for(category["id"])
 
     second_manager, _ = await world.make(["DEPT_MANAGER"], department_id)
     await world.make(["DEPT_HEAD"], department_id)

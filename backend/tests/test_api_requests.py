@@ -31,7 +31,11 @@ from app.database import SessionFactory
 from app.domain.enums import RequestStatus
 from app.domain.permissions import ROLE_ADMIN, ROLE_DEPT_MANAGER, ROLE_REQUESTER
 from app.infrastructure.records.auth import UserRecord
-from app.infrastructure.records.catalog import DepartmentRecord, PurchaseCategoryRecord
+from app.infrastructure.records.catalog import (
+    BudgetRecord,
+    DepartmentRecord,
+    PurchaseCategoryRecord,
+)
 from app.infrastructure.records.purchase import (
     IdempotencyRecord,
     PurchaseItemRecord,
@@ -39,7 +43,7 @@ from app.infrastructure.records.purchase import (
     RequestEventRecord,
 )
 from app.main import app
-from tests.conftest import Account, UserFactory, login_as
+from tests.conftest import Account, UserFactory, create_budget, login_as
 
 pytestmark = pytest.mark.integration
 
@@ -60,21 +64,24 @@ class Fixture:
     def __init__(self) -> None:
         self.departments: list[uuid.UUID] = []
         self.categories: list[uuid.UUID] = []
+        self.budgets: list[uuid.UUID] = []
         self.requests: list[uuid.UUID] = []
         self.actors: list[uuid.UUID] = []
 
     async def purge(self) -> None:
         """按外键顺序清理。
 
-        两个必须记住的依赖方向：
+        三个必须记住的依赖方向：
           - `purchase_requests.requester_id → users`：申请必须**先于**账号删掉。
             所以这个 fixture 要排在 `user_factory` **之前**拆（见下面的依赖声明）。
+          - `budgets → categories / departments`：预算引用两张表（都是 RESTRICT），
+            必须在它们**之前**删（M7 起用例会造预算）。
           - `users.department_id → departments`：部门要**最后**删，
             因为用例造的账号挂在它上面。
         """
         async with SessionFactory() as session:
             if self.requests:
-                # 明细与事件是 CASCADE，这里显式删是为了不依赖建表选项
+                # 明细、事件、预算流水都是 CASCADE，这里显式删是为了不依赖建表选项
                 await session.execute(
                     delete(RequestEventRecord).where(
                         RequestEventRecord.request_id.in_(self.requests)
@@ -95,6 +102,10 @@ class Fixture:
                     delete(IdempotencyRecord).where(
                         IdempotencyRecord.actor_id.in_(self.actors)
                     )
+                )
+            if self.budgets:
+                await session.execute(
+                    delete(BudgetRecord).where(BudgetRecord.id.in_(self.budgets))
                 )
             if self.categories:
                 await session.execute(
@@ -190,9 +201,15 @@ async def world(admin_client: AsyncClient, user_factory: UserFactory, fixture: F
     await _make_actor(
         user_factory, fixture, roles=[ROLE_DEPT_MANAGER], department=dept_id
     )
+    # M7 起提交还要有预算：没有预算行 = 计划外 → 422（业务规则第 1 条）
+    budget = await create_budget(
+        admin_client, department_id=department["id"], category_id=category["id"]
+    )
+    fixture.budgets.append(uuid.UUID(budget["id"]))
     yield {
         "department": department,
         "category": category,
+        "budget": budget,
         "client": client,
         "requester_id": account.id,
     }

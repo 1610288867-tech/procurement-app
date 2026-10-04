@@ -257,7 +257,8 @@ async function main() {
       sidebar.includes("系统管理员") && sidebar.includes(me.roles.join("+"))
       && sidebar.includes("退出")
       && adminMenu.indexOf("采购品类") >= 0 && adminMenu.indexOf("预算") >= 0
-      && adminMenu.indexOf("供应商管理") >= 0 && adminMenu.indexOf("环境自检") >= 0,
+      && adminMenu.indexOf("供应商管理") >= 0 && adminMenu.indexOf("环境自检") >= 0
+      && adminMenu.indexOf("预算看板") >= 0,
       "账号区=" + sidebar.slice(-40) + " 菜单=" + adminMenu.join("/")
       + " 后端角色=" + me.roles.join("+"));
 
@@ -306,6 +307,20 @@ async function main() {
         "列表出现 ¥1,000.00", 15000);
       check("C3 新建预算（填 1000 元）→ 列表显示 ¥1,000.00（界面元、库里分）", true);
     }
+
+    // ---------- A7. 预算看板（M7）：只读页面，财务与管理员可见 ----------
+    // 这里用刚在 C3 建的那条预算做锚点：它由界面创建 → 看板由另一个接口读回来，
+    // 两个接口对不上时这一条就会红。
+    await page.send("Page.navigate", { url: APP + "/budgets" });
+    await waitFor(page, "document.body.innerText.indexOf('预算看板')>=0", "看板页渲染");
+    await waitFor(
+      page,
+      "document.body.innerText.indexOf('¥1,000.00')>=0",
+      "看板上出现刚建的预算",
+      15000,
+    );
+    check("A7 预算看板列出部门 × 品类的预算与可用额（M7 只读页）", true,
+      "含 C3 刚建的预算 ¥1,000.00");
 
     // ---------- B. 换账号看权限 ----------
     await page.send("Page.navigate", { url: APP + "/admin/suppliers" });

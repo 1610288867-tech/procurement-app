@@ -25,6 +25,7 @@ if TYPE_CHECKING:  # 只在类型检查时导入，避免两个协调者互相 i
 
 from app.application.idempotency import IdempotencyCoordinator
 from app.application.ports import (
+    BudgetLedgerPort,
     CatalogRepositoryPort,
     PurchaseItemView,
     PurchaseRepositoryPort,
@@ -35,6 +36,11 @@ from app.application.ports import (
 )
 from app.database import SessionFactory
 from app.domain import events as event_types
+from app.domain.budget_policy import (
+    BudgetError,
+    check_reservable,
+    resolve_budget_year,
+)
 from app.domain.enums import RequestStatus
 from app.domain.org import descendant_ids, parent_map
 from app.domain.permissions import (
@@ -50,6 +56,7 @@ from app.domain.purchase import (
 )
 from app.domain.state_machine import allowed_targets, can_transition
 from app.errors import BusinessError, ConflictError, NotFoundError
+from app.infrastructure.repositories.budget_repo import BudgetRepository
 from app.infrastructure.repositories.catalog_repo import CatalogRepository
 from app.infrastructure.repositories.event_repo import RequestEventRepository
 from app.infrastructure.repositories.purchase_repo import PurchaseRepository
@@ -73,6 +80,7 @@ class PurchaseCoordinator:
         catalog: CatalogRepositoryPort,
         idempotency: IdempotencyCoordinator,
         uow: UnitOfWork,
+        budgets: BudgetLedgerPort | None = None,
         approval: ApprovalCoordinator | None = None,
     ) -> None:
         self._requests = requests
@@ -80,6 +88,8 @@ class PurchaseCoordinator:
         self._catalog = catalog
         self._idempotency = idempotency
         self._uow = uow
+        # 预算账本（M7）。提交时预留、撤回时释放，都与状态推进**同一个事务**。
+        self._budgets = budgets
         # 审批链在**提交**时建。用可选参数注入而不是直接 import：
         # 两个协调者若互相构造就会绕成环，而这里只是"提交时需要它做一件事"。
         self._approval = approval
@@ -503,8 +513,12 @@ class PurchaseCoordinator:
                 raise BusinessError(str(exc), status_code=422, code="NOT_SUBMITTABLE") from exc
 
         extra: dict[str, Any] = {}
+        budget: Any = None
         if target is RequestStatus.IN_APPROVAL:
             extra["submitted_at"] = _now()
+            # ---- M7：提交时**认领**预算（此后这张单子占的就是这一条，不再改）----
+            budget = await self._claim_budget(record=record)
+            extra["budget_id"] = budget.id
         if target in {RequestStatus.WITHDRAWN, RequestStatus.DISCARDED}:
             extra["closed_at"] = _now()
 
@@ -527,6 +541,17 @@ class PurchaseCoordinator:
             payload={"amount_fen": record.amount_total},
         )
 
+        # ---- M7：提交时在**同一个事务里**预留预算（条件更新 + RESERVE 流水）----
+        # 顺序无关紧要，但"同一事务"是硬要求：预留失败（预算不足 422）时，
+        # 状态推进、事件、审批链都必须一起回滚 —— 否则会出现
+        # "状态已进审批中、钱却没占住"这种查不出来的坏账。
+        if target is RequestStatus.IN_APPROVAL and budget is not None:
+            await self._reserve_budget(
+                request_id=request_id,
+                amount_fen=record.amount_total,
+                budget=budget,
+            )
+
         # ---- M6：提交时在**同一个事务里**建审批流与任务 ----
         # 顺序要紧：状态先推进到 IN_APPROVAL，再按品类策略建链。
         # 建链失败（例如某一级没人可审）会让整个事务回滚 —— 状态也一起退回去，
@@ -542,6 +567,12 @@ class PurchaseCoordinator:
                 actor_id=actor_id,
             )
 
+        # ---- M7：撤回时释放预留（驳回那条在审批模块，见 ApprovalCoordinator.reject）----
+        if target is RequestStatus.WITHDRAWN:
+            await self._release_reservation(
+                request_id=request_id, budget_id=record.budget_id
+            )
+
         # 业务事务到这里结束：状态、事件、审批链在同一个事务里落库，**先提交再回读**。
         # 幂等层随后把响应回填到占位行（那是另一个事务，见 application/idempotency.py）。
         await self._uow.commit()
@@ -549,6 +580,102 @@ class PurchaseCoordinator:
             request_id, actor_id=actor_id, roles=roles, department_id=department_id
         )
         return _request_to_dict(view)
+
+    # ------------------------------------------------------------------ 预算（M7）
+
+    async def _claim_budget(self, *, record: PurchaseRequestView) -> Any:
+        """提交时认领预算：**部门 × 品类 × 提交当年**。
+
+        三个口径写在这里（业务规则第 1 条）：
+
+        1. **年度取提交时刻所在年度**（UTC）—— 草稿可以跨年躺着，占额度的是"提交"这个动作；
+        2. **找到就固定下来**（`budget_id` 随状态推进一起写进主单），此后部门/品类再变也不改，
+           这样"这笔申请当初占的是哪条预算"是事实而不是推断；
+        3. **找不到 = 计划外 → 直接 422**（2026-10-03 定稿）。没配预算就没有控制依据，
+           放行等于把"计划外采购"变成一条无人知晓的通道；与"超预算"同一个处置：
+           先配 / 调预算，再由申请人重新提交。
+        """
+        assert self._budgets is not None
+        year = resolve_budget_year(_now())
+        budget = await self._budgets.find_budget(
+            department_id=record.department_id,
+            category_id=record.category_id,
+            year=year,
+        )
+        if budget is None:
+            category = await self._catalog.get_category(record.category_id)
+            label = category.name if category is not None else str(record.category_id)
+            raise BusinessError(
+                f"{year} 年度「{label}」还没有预算，无法提交："
+                "请先由管理员或财务配置这条预算，再重新提交"
+                "（预算外采购应先履行预算调整程序）",
+                status_code=422,
+                code="NO_BUDGET",
+            )
+        return budget
+
+    async def _reserve_budget(
+        self, *, request_id: uuid.UUID, amount_fen: int, budget: Any
+    ) -> None:
+        """预留：条件更新 + `RESERVE` 流水（都在 `BudgetRepository` 里）。
+
+        ⚠️ **判定完全在数据库里。** 这里只在**失败之后**用纯函数把"还差多少"算成人话 ——
+        顺序反过来（先算够不够、再决定扣不扣）在并发下必然超额占用，
+        而且不会报任何错（业务规则第 1 条）。
+        """
+        assert self._budgets is not None
+        reserved = await self._budgets.reserve(
+            budget_id=budget.id, request_id=request_id, amount_fen=amount_fen
+        )
+        if reserved:
+            return
+
+        # 0 行受影响 = 守卫没过。**必须重新读一次库**再解释原因：
+        # 并发失败的那一方手里的对象是"本次请求开始时"的快照（甚至可能是身份映射里的旧值），
+        # 拿它算会得出"钱明明够"的结论，错误码就退化成一句含糊的冲突（实测撞到过 409）。
+        snapshot = await self._budgets.snapshot(budget.id)
+        if snapshot is None:
+            raise ConflictError("预算已不存在，请刷新后重试")
+        total, reserved_now, spent_now = snapshot
+        try:
+            check_reservable(
+                amount_total=total,
+                amount_reserved=reserved_now,
+                amount_spent=spent_now,
+                amount_fen=amount_fen,
+            )
+        except BudgetError as exc:
+            raise BusinessError(
+                f"{exc}（预算调整后请重新提交）",
+                status_code=422,
+                code="BUDGET_INSUFFICIENT",
+            ) from exc
+        # 纯函数按读到的数字算"够"，条件更新却说"没扣成" → 说明 0 行是别的原因
+        raise ConflictError("预算预留失败，请刷新后重试")
+
+    async def _release_reservation(
+        self, *, request_id: uuid.UUID, budget_id: uuid.UUID | None
+    ) -> int:
+        """释放这笔申请**还占着**的预留（驳回 / 撤回各调一次），返回释放金额（分）。
+
+        `budget_id` 为 NULL 说明这是 **M7 之前提交的历史单据**：当时没有预留，
+        也就没有东西可释放 —— 跳过而不是报错，否则老单子一撤回就变成 500。
+
+        金额取**流水算出来的**还占着多少（不是主单金额）：主单金额是"申请多少"，
+        流水才是"账上是多少"，两者在将来支持部分付款时会分叉。
+        """
+        if budget_id is None or self._budgets is None:
+            return 0
+        outstanding = await self._budgets.reserved_fen(request_id)
+        if outstanding <= 0:
+            return 0
+        released = await self._budgets.release(
+            budget_id=budget_id, request_id=request_id, amount_fen=outstanding
+        )
+        if not released:
+            # 预留与流水对不上：宁可让整个事务回滚并报出来，也不要静默留下坏账
+            raise ConflictError("预算释放失败：预留状态与流水不一致，请人工核对")
+        return outstanding
 
     async def _build_approval_chain(
         self,
@@ -642,6 +769,7 @@ class PurchaseCoordinator:
                 catalog=CatalogRepository(session),
                 idempotency=self._idempotency,
                 uow=session,
+                budgets=BudgetRepository(session),
             )
             record, _, _ = await reader.get_request_detail(
                 request_id=request_id,

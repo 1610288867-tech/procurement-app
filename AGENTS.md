@@ -193,7 +193,7 @@ cd backend
 .\.venv\Scripts\Activate.ps1
 pytest -m unit            # 默认档，毫秒级
 pytest -m integration     # 需要 PostgreSQL 在跑
-ruff check app tests
+ruff check app tests scripts   # scripts/ 里也有代码（种子 / 冒烟 / 清理脚本）
 mypy app --ignore-missing-imports
 
 # 3) 前端

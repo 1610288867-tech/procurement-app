@@ -4,7 +4,7 @@
 不要一开始就抄。每加一个配置项之前，先问自己"能不能不给它开关"。
 
 注意这里**故意没有 cors_origins**：前端走 Vite 代理（同源），用不上 CORS。
-等 M10 打包成 APK、前后端真正分居两个源时再加回来。
+等 M12 打包成 APK、前后端真正分居两个源时再加回来。
 
 基础设施（PostgreSQL 容器）在 D:\\develop\\procurement\\docker-compose.yml，
 与本项目代码解耦：容器是容器，代码是代码。
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # 长度不短于 32 字节（HS256 的密钥短了 PyJWT 会警告）。
     jwt_secret: str = "dev-only-change-me-before-any-real-use"
 
-    # M7 起用：附件落盘目录
+    # M9 起用：附件落盘目录（M9 之前**没有任何代码读它**）
     upload_dir: str = "uploads"
 
     log_level: str = "INFO"

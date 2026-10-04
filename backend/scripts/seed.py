@@ -171,31 +171,37 @@ async def seed() -> None:
             )
             created.append(f"供应商 {code} {name}")
 
-        # ---- 预算：行政部 × 办公用品 × 今年，10 万元 ----
+        # ---- 预算 ----
+        # M7 起**提交必须有预算**：该部门 × 品类 × 年度没有预算行 = 计划外 → 422。
+        # 所以演示数据要给"会被用来提单"的品类都配一条，否则页面上一提交就报错。
         year = now.year
-        department = departments["ADM"]
-        category = categories["CAT-OFFICE"]
-        existing_budget = (
-            await session.scalars(
-                select(BudgetRecord).where(
-                    BudgetRecord.department_id == department.id,
-                    BudgetRecord.category_id == category.id,
-                    BudgetRecord.year == year,
+        for department_code, category_code, amount_fen, label in (
+            ("ADM", "CAT-OFFICE", 10_000_000, "100000.00 元"),
+            ("ADM", "CAT-IT", 5_000_000, "50000.00 元"),
+        ):
+            department = departments[department_code]
+            category = categories[category_code]
+            existing_budget = (
+                await session.scalars(
+                    select(BudgetRecord).where(
+                        BudgetRecord.department_id == department.id,
+                        BudgetRecord.category_id == category.id,
+                        BudgetRecord.year == year,
+                    )
                 )
-            )
-        ).one_or_none()
-        if existing_budget is not None:
-            skipped.append(f"预算 {year} 行政部 × 办公用品")
-        else:
+            ).one_or_none()
+            if existing_budget is not None:
+                skipped.append(f"预算 {year} {department_code} × {category_code}")
+                continue
             session.add(
                 BudgetRecord(
                     department_id=department.id,
                     category_id=category.id,
                     year=year,
-                    amount_total=10_000_000,  # 100,000.00 元
+                    amount_total=amount_fen,
                 )
             )
-            created.append(f"预算 {year} 行政部 × 办公用品 = 100000.00 元")
+            created.append(f"预算 {year} {department_code} × {category_code} = {label}")
 
         # ---- 账号（口令一律 Argon2id 哈希，库里看不到原文）----
         for username, full_name, role, department_code in USERS:

@@ -27,6 +27,7 @@
 | 品类 | `code` 以 `TCAT-PAGE-`（页面实测）/ `SELFCHECK-`（浏览器自检）/ `TCAT-`（集成测试兜底）开头 |
 | 部门 | `code` 以 `TDEP-` 开头（集成测试兜底） |
 | 账号 | `username` 以 `t-` 开头（测试工厂用的前缀） |
+| 预算流水 | 不按前缀认：按"上面这些**要删的预算**"反查（M7 起预算行不能带着流水被删） |
 
 **保留**：种子数据（`CAT-OFFICE` / `CAT-IT` / `ADM` / `PUR` / `FIN` / …）、
 手工数据、以及任何不符合上述前缀的记录。
@@ -62,6 +63,7 @@ from app.infrastructure.records.approval import (  # noqa: E402
 from app.infrastructure.records.auth import UserRecord  # noqa: E402
 from app.infrastructure.records.catalog import (  # noqa: E402
     BudgetRecord,
+    BudgetTransactionRecord,
     DepartmentRecord,
     PurchaseCategoryRecord,
 )
@@ -233,7 +235,23 @@ async def _run(scope: str, dry_run: bool) -> int:
                 )
             ).rowcount or 0
 
-        # ---- ③ 品类：预算引用它（RESTRICT），必须先删预算 ----
+        # ---- ③ 预算流水：`budget_transactions.budget_id` 是 RESTRICT，
+        #      预算行不能带着流水被删（流水本身不按前缀认，只能按"要删的预算"反查）----
+        doomed_budget_ids = select(BudgetRecord.id).where(
+            or_(
+                BudgetRecord.category_id.in_(category_ids or [None]),
+                BudgetRecord.department_id.in_(department_ids or [None]),
+            )
+        )
+        counts["预算流水"] = (
+            await session.execute(
+                delete(BudgetTransactionRecord).where(
+                    BudgetTransactionRecord.budget_id.in_(doomed_budget_ids)
+                )
+            )
+        ).rowcount or 0
+
+        # ---- ④ 品类：预算引用它（RESTRICT），必须先删预算 ----
         if category_ids:
             counts["预算(按品类)"] = (
                 await session.execute(
@@ -248,7 +266,7 @@ async def _run(scope: str, dry_run: bool) -> int:
                 )
             ).rowcount or 0
 
-        # ---- ④ 部门：**四处** RESTRICT 引用都要先清 ----
+        # ---- ⑤ 部门：**四处** RESTRICT 引用都要先清 ----
         # users.department_id / budgets.department_id /
         # purchase_requests.department_id / departments.parent_id
         # 漏一处，删部门就静默 0 行、留下孤儿部门（实测踩过）。

@@ -76,6 +76,18 @@ MODE_SINGLE = "SINGLE"
 MODE_ALL = "ALL"
 
 
+#: 预算流水类型（M7）。三类合起来必须能还原预算的**每一次**变动：
+#: `RESERVE`（提交时预留） / `RELEASE`（驳回、撤回，以及"预留 − 实付"的差额） / `SPEND`（付款结转）。
+#:
+#: 注意 `RELEASE` 有两种来源，这正是"差额必须显式释放"那条规则的落点：
+#: 少了差额那一条，预留会永久挂在账上，而账面看不出任何异常。
+TX_RESERVE = "RESERVE"
+TX_RELEASE = "RELEASE"
+TX_SPEND = "SPEND"
+
+BUDGET_TX_KINDS: tuple[str, ...] = (TX_RESERVE, TX_RELEASE, TX_SPEND)
+
+
 # 紧急程度。规则 DSL 里会用到（`{"eq": ["urgency", "URGENT"]}`），
 # 所以它既是数据库列值，也是策略上下文里的取值。
 URGENCY_NORMAL = "NORMAL"

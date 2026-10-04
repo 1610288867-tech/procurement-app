@@ -52,6 +52,11 @@ function Sidebar() {
   // 判据与路由守卫 `RequireAuth requireDepartment` 必须同源，否则会出现
   // "菜单里有、点进去被拦"或反过来的错配。
   const canRequest = me.isSuccess && Boolean(me.data?.department_id);
+  // 预算看板（M7）是**只读**的：财务与管理员的职责里都包含"看钱"，
+  // 而改钱仍然只走管理员那条路径。判据与路由守卫的角色列表必须同源。
+  const canSeeBudgets =
+    me.isSuccess &&
+    Boolean(me.data?.roles.some((role) => role === "FINANCE" || role === "ADMIN"));
 
   return (
     <aside className="flex w-full shrink-0 flex-col gap-6 border-line bg-section p-4 md:sticky md:top-0 md:h-screen md:w-60 md:border-r md:p-5">
@@ -78,6 +83,7 @@ function Sidebar() {
                 一个人完全可能既是管理员又是 GM（要审大额单）。 */}
             <NavItem to="/approvals/tasks">我的待办</NavItem>
             <NavItem to="/suppliers">合格供应商</NavItem>
+            {canSeeBudgets && <NavItem to="/budgets">预算看板</NavItem>}
           </>
         )}
         {isAdmin && (

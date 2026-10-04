@@ -18,7 +18,7 @@
 | M4 | 前端设计系统 | ✅ 完成 | 2026-10-02 |
 | M5 | 采购申请 | ✅ 完成 ※ | 2026-10-02 |
 | M6 | 审批引擎 ★ | ✅ 完成 | 2026-10-03 |
-| M7 | 预算并发预留 ★ | ⬜ | |
+| M7 | 预算并发预留 ★ | ✅ 完成 | 2026-10-04 |
 | M8 | 回归验收 | ⬜ | |
 | M9 | 附件与时间线 | ⬜ | |
 | M10 | 履约链 | ⬜ | |
@@ -105,6 +105,7 @@
       （自检 A4：账号区 `ADMIN+GM` + 管理员菜单三项齐全；B1：requester 菜单**恰好只剩两项**）
 - [x] 已登录的人打开 `/login` 会跳回目标页，不再同时看到登录表单与"退出"
 - [x] 浏览器自检 **11 项全过**（`node scripts\浏览器自检.mjs`，exit 0）
+      （当时 11 项；M7 加了「预算看板」那一条，现为 **12 项**）
 - [x] `npx tsc --noEmit` / `npx vitest run`（14 passed）/ `npm run build`（gzip 74.81 KB）全绿
 - [x] 既有交互不回归：登录跳回原页面、HttpOnly 生效、无兜底策略 422 原文、预算「元⇄分」、越权提示页
 
@@ -154,7 +155,7 @@
 | `SINGLE` 或签 3 人 → 1 条任务、任一人认领通过即完成 | 1 条 `assignee_id=NULL`；认领 200、第二人认领 403（已分配他人）、认领人通过 → `SOURCING` |
 | 无兜底 / 有死步骤的策略 → 422 | 两条都 422；死步骤那条报 `order=60 在任何探测金额下都不会被触发` |
 
-**验证入口**（都实跑过）：
+**验证入口**（都实跑过；**下面是 M6 当时的数字，最新数字见 M7 一节**）：
 
 ```powershell
 cd backend;  .\.venv\Scripts\python.exe -m pytest -m ""         # 198 passed（M6 收尾时 187，内控修复后 +11）
@@ -195,15 +196,55 @@ M6 验收全过之后，做内控对账时发现**职责分离（SoD）这一整
 - 依据、对账与八条定稿口径见 [`docs/采购内控对照.md`](docs/采购内控对照.md)；
   规则写进 [`docs/业务规则.md`](docs/业务规则.md) 第 9、10 条。
 
-## M7 · 预算并发预留 ★
+## M7 · 预算并发预留 ★ ✅ 2026-10-04
 
-- [ ] 总额 1000 元时并发提交两笔 800 元，只有一笔成功，另一笔 422
-- [ ] 驳回后可用额度恢复
-- [ ] `budget_transactions` 能看到 RESERVE / RELEASE / SPEND 三类流水
-- [ ] 同一申请重放不产生第二条 `RESERVE`
-- [ ] **申请 1000 元、实付 900 元后：`amount_spent` +900、该申请 `amount_reserved` 归零、`amount_total` 不变**
-- [ ] **该申请三类流水相加（RESERVE − RELEASE − SPEND）= 0**
-- [ ] 并发测试连跑 20 次稳定
+全部通过。**证据**（可复核）：
+
+| 验收项 | 实测依据 |
+| --- | --- |
+| 总额 1000 元时并发提交两笔 800 元，只有一笔成功，另一笔 422 | `test_api_budget.py::test_concurrent_submits_never_overdraw`：`asyncio.gather` 两个提交 → `[200, 422]`，`BUDGET_INSUFFICIENT` 文案带"可用 20000 分 / 需要 80000 分"；库里 `reserved=80000`；失败那笔**整体回滚**（仍是草稿、`budget_id` 为空、无流水） |
+| 驳回后可用额度恢复 | `test_reject_releases_the_reservation`：驳回后 `reserved` 归零，流水 `[RESERVE 80000, RELEASE 80000]` |
+| 撤回也要释放 | `test_withdraw_releases_the_reservation`：同上（三个释放入口：驳回 / 撤回 / 付款结转） |
+| `budget_transactions` 三类流水齐全 | `test_ledger_covers_all_three_kinds_and_sums_to_zero`；页面上也能看（`GET /api/v1/budgets/transactions` + 「预算看板」卡片） |
+| 同一申请重放不产生第二条 `RESERVE` | `test_idempotent_replay_does_not_reserve_twice`：同键重放响应逐字节相同、流水仍只有一条；直接调仓库再预留一次会撞 `UNIQUE(request_id, kind)` → 409 |
+| 申请 1000 元、实付 900 元：`amount_spent` +900、预留归零、总额不变 | 同一条用例：`{"total": 100000, "reserved": 0, "spent": 90000}` |
+| 三类流水相加（RESERVE − RELEASE − SPEND）= 0 | 同上：`[(RESERVE,100000),(SPEND,90000),(RELEASE,10000)]` → 归零 |
+| 并发测试连跑 20 次稳定 | 单条用例连跑 20 轮：**20/20 通过**（失败轮次为空） |
+| 全量回归 | `pytest -m ""` → **222 passed**（198 + 纯函数 14 + 集成 10）；ruff / mypy 干净；三条分层自查无输出 |
+| 前端 | `tsc --noEmit` 无错误 / `vitest` 14 passed / `npm run build` 通过 |
+| 浏览器 | 自检 **12/12**（新增 A7：预算看板列出预算与可用额）；`m6-页面实测.mjs` **20/20**（新增"先配预算再提交"一步） |
+| 真实链路 | 以 `requester` 提交 `PR-2026-DA3A9C82`（800 元）→ 库里 `RESERVE 80000`；办公用品可用 10000000 → 9920000 分；看板实时显示 已预留 ¥800.00 / 可用 ¥149,200.00 |
+
+**验证入口**（都实跑过）：
+
+```powershell
+cd backend;  .\.venv\Scripts\python.exe -m pytest -m ""                    # 222 passed
+             .\.venv\Scripts\python.exe -m pytest tests/test_api_budget.py -m integration -q   # 10 passed
+             .\.venv\Scripts\python.exe scripts\m6_smoke.py                # 19/19，对着真实服务
+cd ..;       node scripts\浏览器自检.mjs                                       # 12/12
+             node scripts\m6-页面实测.mjs                                      # 20/20，含截图
+cd backend;  .\.venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all   # 清测试数据
+```
+
+> **本阶段新增的三件事**（验收清单之外，但都是这一步必须一起做的）：
+>
+> 1. **迁移 `0007` 建 `budget_transactions`**：`UNIQUE(request_id, kind)` 挡"重试重复扣钱"，
+>    `amount > 0`；`budget_id` 用 RESTRICT（有流水的预算行不许被删）、
+>    `request_id` 用 CASCADE（流水是申请的从属数据）。
+> 2. **"计划外"口径落地**（2026-10-03 定稿）：该部门 × 品类 × 年度**根本没有预算行 → 422**
+>    （`NO_BUDGET`），与"超预算"同一个处置 —— 先配 / 调预算再重新提交。**失败关闭**，不留静默放行。
+>    `budget_id` 在提交那一次条件更新里**一起写死**（此后部门 / 品类变更都不影响它）。
+> 3. **只读预算看板**（`FINANCE` + `ADMIN`）：`GET /api/v1/budgets` 带部门名与品类名、
+>    `GET /api/v1/budgets/transactions` 带申请单号；页面 `/budgets` 有合计、使用率条与流水。
+>    **看钱与改钱分开**：改预算仍然只走 `/api/v1/admin/budgets`。
+>
+> **踩到的坑（一个，但是老坑的新形态）**：并发失败的那一方如果拿**本次请求开始时读到的**
+> 预算数字去解释原因，会得出"钱明明够啊"的结论，422 于是退化成一句含糊的 409（实测撞到）。
+> 修法是**失败后强制重读**（`select(...).execution_options(populate_existing=True)`）再算差额 ——
+> 判定始终只由条件更新做，重读只用来把话说清楚。这与 M5「条件更新后回读旧对象」是同一类问题。
+
+> **付款结转的调用方在 M10**：`BudgetRepository.settle()`（`SPEND(实付) + RELEASE(预留 − 实付)`）
+> 已经写好并被集成测试钉住，M10 的付款接口直接调它，**不要再写第二份算术**。
 
 ## M8 · 回归验收（2026-10-02 插入）
 
@@ -270,7 +311,7 @@ M6 验收全过之后，做内控对账时发现**职责分离（SoD）这一整
 | 约束 | 怎么撞它 |
 | --- | --- |
 | **审批链不许为空** | M2 提交无兜底策略 → 422 |
-| **预留与实付差额必须显式释放** | M7/M10 实付小于预留时，断言 `reserved` 归零 |
+| **预留与实付差额必须显式释放** | ✅ M7 已撞过：`test_ledger_covers_all_three_kinds_and_sums_to_zero`（实付 < 预留时断言 `reserved` 归零、三类流水相加为 0）；M10 的付款接口再撞一次 |
 | **权限范围必须写进 `WHERE`** | M3 换 id 取别人的申请 → 404 |
 
 ## 待修：内控缺口（2026-10-03 记录）

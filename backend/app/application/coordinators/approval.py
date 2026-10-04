@@ -27,8 +27,10 @@ from typing import Any
 from app.application.ports import (
     ApprovalRepositoryPort,
     ApprovalTaskView,
+    BudgetLedgerPort,
     CatalogRepositoryPort,
     PurchaseRepositoryPort,
+    PurchaseRequestView,
     RequestEventRepositoryPort,
     UnitOfWork,
     UserDirectoryPort,
@@ -71,6 +73,7 @@ class ApprovalCoordinator:
         users: UserDirectoryPort,
         catalog: CatalogRepositoryPort,
         uow: UnitOfWork,
+        budgets: BudgetLedgerPort | None = None,
     ) -> None:
         self._approvals = approvals
         self._requests = requests
@@ -78,6 +81,8 @@ class ApprovalCoordinator:
         self._users = users
         self._catalog = catalog
         self._uow = uow
+        # 预算账本（M7）：驳回要释放预留 —— 与"主单变 REJECTED"同一个事务。
+        self._budgets = budgets
 
     # ================================================================ 建链（提交时）
 
@@ -442,12 +447,18 @@ class ApprovalCoordinator:
             status=FLOW_REJECTED,
             expected_step_order=flow.current_step_order,
         )
-        await self._push_request_status(
+        request = await self._push_request_status(
             request_id=task.request_id,
             actor_id=actor_id,
             target=RequestStatus.REJECTED,
             event_type=APPROVAL_REJECTED,
             payload={"step_order": task.step_order, "role": task.role, "comment": reason},
+        )
+        # ---- M7：驳回要**释放预算预留**（与状态变更同一个事务）----
+        # 三个释放入口里的第一个：驳回 / 撤回 / 付款结转。少一个就会让额度永久虚低，
+        # 而且不会报错 —— 所以它和状态推进写在同一个事务、同一次提交里。
+        await self._release_reservation(
+            request_id=task.request_id, budget_id=request.budget_id
         )
         await self._uow.commit()
         return {
@@ -619,6 +630,26 @@ class ApprovalCoordinator:
                 return step
         return None
 
+    async def _release_reservation(
+        self, *, request_id: uuid.UUID, budget_id: uuid.UUID | None
+    ) -> int:
+        """释放这笔申请还占着的预算预留（M7）。
+
+        与 `PurchaseCoordinator._release_reservation` 同一套口径：
+        金额取**流水算出来的**还占着多少，`budget_id` 为 NULL（M7 之前的历史单据）则跳过。
+        """
+        if budget_id is None or self._budgets is None:
+            return 0
+        outstanding = await self._budgets.reserved_fen(request_id)
+        if outstanding <= 0:
+            return 0
+        released = await self._budgets.release(
+            budget_id=budget_id, request_id=request_id, amount_fen=outstanding
+        )
+        if not released:
+            raise ConflictError("预算释放失败：预留状态与流水不一致，请人工核对")
+        return outstanding
+
     async def _push_request_status(
         self,
         *,
@@ -627,8 +658,8 @@ class ApprovalCoordinator:
         target: RequestStatus,
         event_type: str,
         payload: Mapping[str, Any],
-    ) -> None:
-        """由审批模块推进主单状态，并写事件。
+    ) -> PurchaseRequestView:
+        """由审批模块推进主单状态，并写事件。**返回推进后的主单**（调用方要用它的 `budget_id`）。
 
         边界很清楚：**审批模块不直接改主单的其它字段**，只推进状态 + 写事件。
         将来加"补充式驳回"这类流程时，两层不会互相纠缠。
@@ -664,6 +695,9 @@ class ApprovalCoordinator:
             to_status=target.value,
             payload=dict(payload),
         )
+        # 返回的是**条件更新之前读到的**那一份：`budget_id` 不在本次变更的字段里，
+        # 所以它仍然是当前值（`transition_status` 只改状态、版本与 `closed_at`）。
+        return request
 
     @staticmethod
     async def _any_scope() -> RequestScope:

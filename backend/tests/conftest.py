@@ -17,6 +17,7 @@ M3 起多了一个 `user_factory`：集成测试要一个"登录态"才能打受
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -37,6 +38,11 @@ from app.main import app
 
 # 测试账号统一用这个口令。它是测试数据，不是任何真实环境的凭证。
 TEST_PASSWORD = "Dev-Passw0rd!"
+
+#: 集成测试默认配的预算额度：100 万元（分）。
+#: 定得比任何一条用例的申请都大 —— 这些用例验的是审批与权限，不是预算不足；
+#: 真要撞预算边界时，用例自己指定金额（见 `tests/test_api_budget.py`）。
+DEFAULT_BUDGET_FEN = 100_000_000
 
 
 @pytest.fixture
@@ -141,6 +147,38 @@ async def login_as(http: AsyncClient, account: Account) -> None:
         json={"username": account.username, "password": account.password},
     )
     assert response.status_code == 200, response.text
+
+
+def budget_year() -> int:
+    """预算按「提交时刻所在年度」认领（M7），测试造预算时用同一个口径。"""
+    return datetime.now(UTC).year
+
+
+async def create_budget(
+    admin: AsyncClient,
+    *,
+    department_id: str,
+    category_id: str,
+    amount_fen: int = DEFAULT_BUDGET_FEN,
+    year: int | None = None,
+) -> dict:
+    """给"部门 × 品类 × 年度"配一条预算。
+
+    M7 起**提交必须有预算**：没有预算行 = 计划外 → 422（业务规则第 1 条）。
+    所以凡是会走到"提交"的集成测试，都得先有这一条 ——
+    这恰恰是那条口径在测试里的体现，而不是测试的累赘。
+    """
+    response = await admin.post(
+        "/api/v1/admin/budgets",
+        json={
+            "department_id": department_id,
+            "category_id": category_id,
+            "year": year if year is not None else budget_year(),
+            "amount_fen": amount_fen,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 @pytest.fixture

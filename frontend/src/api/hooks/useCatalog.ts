@@ -17,6 +17,8 @@ const DEPARTMENTS = ["departments"] as const;
 const CATEGORIES = ["categories"] as const;
 const ADMIN_CATEGORIES = ["admin", "categories"] as const;
 const BUDGETS = ["admin", "budgets"] as const;
+const BOARD_BUDGETS = ["budgets"] as const;
+const BUDGET_TRANSACTIONS = ["budgets", "transactions"] as const;
 
 // ------------------------------------------------------------------ 查询
 
@@ -43,6 +45,22 @@ export function useCategories() {
 
 export function useBudgets() {
   return useQuery({ queryKey: BUDGETS, queryFn: api.adminListBudgets });
+}
+
+/** 预算看板（财务 / 管理员）：全部部门 × 品类的预算。**只读**。 */
+export function useBoardBudgets(year?: number) {
+  return useQuery({
+    queryKey: [...BOARD_BUDGETS, year ?? "all"],
+    queryFn: () => api.listBudgets({ year }),
+  });
+}
+
+/** 最近的预算流水（RESERVE / RELEASE / SPEND）。 */
+export function useBudgetTransactions(limit = 50) {
+  return useQuery({
+    queryKey: [...BUDGET_TRANSACTIONS, limit],
+    queryFn: () => api.listBudgetTransactions({ limit }),
+  });
 }
 
 // ------------------------------------------------------------------ 写操作

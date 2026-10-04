@@ -148,7 +148,7 @@ async function main() {
   // ⚠️ **自己造一条品类，不挑"列表里第一个"**：开发库的品类列表可能混着
   // 浏览器自检留下的 `SELFCHECK-*`（它的策略故意是"无兜底"、保存时会被 422 拦下），
   // 挑到它就会建草稿失败 —— 而且报错看起来像"页面坏了"，实则是脏数据。
-  // 用 `TCAT-PAGE-` 前缀，跑完由 `backend/scripts/m6_page_cleanup.py` 删掉。
+  // 用 `TCAT-PAGE-` 前缀，跑完由 `backend/scripts/testdata_cleanup.py` 删掉。
   //
   // 建品类要 ADMIN，而实测要以部门主管身份跑（admin 没有部门、提交不了申请），
   // 所以这里临时换一次身份：建完立刻切回来。
@@ -186,6 +186,27 @@ async function main() {
   await loginAs("dept-manager");
   if (draftCategory.error) throw new Error(`建页面实测品类失败：${draftCategory.error}`);
   check(true, "自建一条页面实测品类（不依赖库里现成数据）", draftCategory.name);
+
+  // M7 起**提交必须有预算**：没有预算行 = 计划外 → 422。
+  // 所以这条自建品类也要配一条额度足够的预算（仍是管理员身份，下面才切回去）。
+  await loginAs("admin");
+  const draftBudget = await evaluate(`(async () => {
+    const response = await fetch('/api/v1/admin/budgets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        department_id: '${me.department_id}',
+        category_id: '${draftCategory.id}',
+        year: ${new Date().getFullYear()},
+        amount_fen: 10000000,
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) return { error: JSON.stringify(body).slice(0, 160) };
+    return { id: body.id };
+  })()`);
+  await loginAs("dept-manager");
+  if (draftBudget.error) throw new Error(`建页面实测预算失败：${draftBudget.error}`);
+  check(true, "给这条品类配一条预算（M7 起提交必须先有预算）", "额度 100000 元");
 
   const draft = await evaluate(`(async () => {
     const response = await fetch('/api/v1/requests', {
@@ -437,7 +458,7 @@ async function main() {
   // 所以这里删不掉自己造的申请与品类。统一走一个清理脚本（与浏览器自检共用）：
   //     cd backend; .venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all
   console.log(
-    "\n提示：本次实测造了 1 条品类（TCAT-PAGE-*）与 2 条申请（标题含「M6 页面实测」）。"
+    "\n提示：本次实测造了 1 条品类（TCAT-PAGE-*）、1 条配套预算与 2 条申请（标题含「M6 页面实测」）。"
     + "\n      清理（连浏览器自检的一起）：cd backend; "
     + ".venv\\Scripts\\python.exe scripts\\testdata_cleanup.py --scope all",
   );

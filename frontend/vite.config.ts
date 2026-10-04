@@ -24,7 +24,7 @@ export default defineConfig({
       // 前端仍然请求 /api/...，但由 Vite 转发到 8000，浏览器看到的始终是同源。
       // 好处：不需要 CORS 配置、不需要 credentials: "include"（Cookie 自动带）、
       //      M3 引入 httpOnly Cookie 时前端一行都不用改、
-      //      M10 打包时也只需要换掉这个 target。
+      //      M12 打包时也只需要换掉这个 target。
       //
       // 出错时的表现也更直观：代理层直接报 ECONNREFUSED，一眼看出是后端没起；
       // 而 CORS 错误会让人误以为后端有 bug。

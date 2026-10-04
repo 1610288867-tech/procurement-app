@@ -22,7 +22,7 @@
 | M5 | `idempotency_records` | 幂等记录（含 `IN_PROGRESS` 占位） |
 | M6 | `approval_flows` | 一次审批实例（含**策略快照**） |
 | M6 | `approval_tasks` | 审批任务（或签/会签） |
-| M7 | `budget_transactions` | 预算流水（`RESERVE / RELEASE / SPEND`，`UNIQUE(request_id, kind)`） |
+| M7 | `budget_transactions` | 预算流水（`RESERVE / RELEASE / SPEND`，`UNIQUE(request_id, kind)`；M7 已建） |
 | M9 | `attachments` | 附件（报价单/合同/发票/验收照片） |
 | M10 | `purchase_orders` + `purchase_order_lines` | 采购订单与其明细 |
 | M10 | `quotations` | 供应商报价 |
@@ -33,6 +33,12 @@
 > 计数口径：上表 19 行里，有 3 行各含两张表（订单、收货、发票与付款），所以 **19 + 3 = 22 张**。
 > M9 之前要建的 15 张 = 上表**除 M10 那 4 行以外的 15 行**（含 `budget_transactions` 与 `audit_logs`）；
 > M10 的 7 张单独一组，到那一步再建。M11 的知识库 5 张**不在这 22 张里**。
+>
+> **建表进度（2026-10-04，M7 收尾）**：已建 **13 张** —— `suppliers`、`departments`、
+> `purchase_categories`、`budgets`、`users`、`user_roles`、`purchase_requests`、`purchase_items`、
+> `request_events`、`idempotency_records`、`approval_flows`、`approval_tasks`、`budget_transactions`
+> （7 条迁移，`alembic history` 可核）。**还差 9 张**：`attachments`（M9）、`audit_logs`
+> （随 M9/M10 一起补）与 M10 的 7 张。
 
 ## 二、关键字段与取值（写迁移时的依据）
 

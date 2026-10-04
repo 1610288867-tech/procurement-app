@@ -23,6 +23,7 @@ import RequestNew from "./pages/requester/RequestNew";
 import AdminBudgets from "./pages/admin/Budgets";
 import AdminCategories from "./pages/admin/Categories";
 import AdminSuppliers from "./pages/admin/Suppliers";
+import BudgetBoard from "./pages/finance/BudgetBoard";
 
 export default function AppRoutes() {
   return (
@@ -83,6 +84,17 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <TaskDetail />
+          </RequireAuth>
+        }
+      />
+
+      {/* 预算看板（M7）：**只读**，财务与管理员可见。
+          "看钱"与"改钱"刻意分成两个入口 —— 改预算仍然只走 /admin/budgets。 */}
+      <Route
+        path="/budgets"
+        element={
+          <RequireAuth roles={["FINANCE", "ADMIN"]}>
+            <BudgetBoard />
           </RequireAuth>
         }
       />

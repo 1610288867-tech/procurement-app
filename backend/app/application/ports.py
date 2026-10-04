@@ -175,6 +175,8 @@ class PurchaseRequestView(Protocol):
     requester_id: Any
     department_id: Any
     category_id: Any
+    #: 提交时认领的预算（M7）。M7 之前的历史单据是 None —— 那种单子没有预留可释放。
+    budget_id: Any
     title: str
     reason: str | None
     amount_total: int
@@ -395,3 +397,50 @@ class UserDirectoryPort(Protocol):
     async def find_by_role(
         self, role: str, *, department_ids: Collection[Any] | None = None
     ) -> Sequence[UserView]: ...
+
+
+# ---------------------------------------------------------------- 预算（M7）
+
+
+class BudgetTransactionView(Protocol):
+    """一条预算流水（只读展示用）。"""
+
+    id: Any
+    budget_id: Any
+    request_id: Any
+    kind: str
+    amount: int
+    created_at: datetime
+
+
+class BudgetLedgerPort(Protocol):
+    """预算的**金额变动**入口（M7）。
+
+    单独一个端口而不是塞进 `CatalogRepositoryPort`：那个端口管的是"管理员维护的主数据"
+    （增删改查），这里管的是"钱怎么动"—— 两者的纪律完全不同：
+    变动只允许走条件更新，而且**每次变动都必须留下一条流水**。
+    """
+
+    async def find_budget(
+        self, *, department_id: Any, category_id: Any, year: int
+    ) -> BudgetView | None: ...
+
+    async def list_budgets(
+        self, *, year: int | None = None
+    ) -> Sequence[tuple[BudgetView, str, str]]: ...
+
+    async def snapshot(self, budget_id: Any) -> tuple[int, int, int] | None: ...
+
+    async def list_transactions(
+        self, *, budget_id: Any | None = None, limit: int = 50
+    ) -> Sequence[tuple[BudgetTransactionView, str]]: ...
+
+    async def reserved_fen(self, request_id: Any) -> int: ...
+
+    async def reserve(
+        self, *, budget_id: Any, request_id: Any, amount_fen: int
+    ) -> bool: ...
+
+    async def release(
+        self, *, budget_id: Any, request_id: Any, amount_fen: int
+    ) -> bool: ...

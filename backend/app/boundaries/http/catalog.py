@@ -23,8 +23,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.coordinators.catalog import CatalogCoordinator
-from app.boundaries.deps import CurrentUser
+from app.boundaries.deps import CurrentUser, require_roles
 from app.database import get_session
+from app.domain.permissions import ROLE_ADMIN, ROLE_FINANCE
+from app.infrastructure.repositories.budget_repo import BudgetRepository
 from app.infrastructure.repositories.catalog_repo import CatalogRepository
 
 router = APIRouter(tags=["主数据"])
@@ -34,7 +36,11 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 def catalog_coordinator(session: AsyncSession) -> CatalogCoordinator:
     """装配依赖。仓库与会话在结构上满足 application/ports.py 里的协议。"""
-    return CatalogCoordinator(catalog=CatalogRepository(session), uow=session)
+    return CatalogCoordinator(
+        catalog=CatalogRepository(session),
+        uow=session,
+        ledger=BudgetRepository(session),
+    )
 
 
 # ---------------------------------------------------------------- 响应模型
@@ -189,3 +195,103 @@ async def list_my_budgets(
         department_id=user.department_id, year=year
     )
     return [BudgetOut.model_validate(record) for record in records]
+
+
+# ------------------------------------------------------- 预算看板（M7，只读）
+
+
+class BudgetBoardOut(BudgetOut):
+    """看板行 = 预算 + 部门名 + 品类名。
+
+    名字由后端带出来，而不是让前端再查两个接口：财务没有"列出全部部门 / 品类"
+    的权限（那是管理员接口），而且少两次往返就少两处可能 403 的地方。
+    """
+
+    department_name: str
+    category_name: str
+
+
+class BudgetTransactionOut(BaseModel):
+    """一条预算流水。`amount_fen` 永远是正数，方向由 `kind` 表达。"""
+
+    id: uuid.UUID
+    budget_id: uuid.UUID
+    request_id: uuid.UUID
+    request_code: str
+    kind: str
+    amount_fen: int
+    created_at: datetime
+
+
+@router.get(
+    "/api/v1/budgets",
+    response_model=list[BudgetBoardOut],
+    summary="预算看板（全部部门 / 品类）",
+    dependencies=[Depends(require_roles(ROLE_FINANCE, ROLE_ADMIN))],
+)
+async def list_budgets_for_board(
+    session: SessionDep,
+    year: Annotated[int | None, Query(ge=2000, le=2100)] = None,
+) -> list[BudgetBoardOut]:
+    """**财务与管理员的预算看板**：部门 × 品类的总额 / 已预留 / 已花 / 可用。
+
+    为什么单开一个接口，而不是把 `/admin/budgets` 的权限放宽：
+    两个动作要分别收紧 —— **看钱**是财务的职责（内控指引第 7 号把"审核采购预算"
+    列为付款前置），**改钱**只该留给管理员。混成一个接口就只能取两者的并集。
+
+    可用额由前端按 `总额 − 已预留 − 已花` 算（公式的唯一落点在后端
+    `domain/budget_policy.available_fen`，这里返回三个原始数字，不重复算一遍）。
+    """
+    rows = await catalog_coordinator(session).list_all_budgets(year=year)
+    # 用 `model_validate` 而不是直接构造：金额字段带 `validation_alias`
+    # （库里叫 `amount_total`，响应里叫 `amount_total_fen`），走别名一次就能对齐，
+    # 与其它两个预算接口保持同一种写法。
+    return [
+        BudgetBoardOut.model_validate(
+            {
+                "id": record.id,
+                "department_id": record.department_id,
+                "category_id": record.category_id,
+                "year": record.year,
+                "amount_total": record.amount_total,
+                "amount_reserved": record.amount_reserved,
+                "amount_spent": record.amount_spent,
+                "department_name": department_name,
+                "category_name": category_name,
+            }
+        )
+        for record, department_name, category_name in rows
+    ]
+
+
+@router.get(
+    "/api/v1/budgets/transactions",
+    response_model=list[BudgetTransactionOut],
+    summary="预算流水（RESERVE / RELEASE / SPEND）",
+    dependencies=[Depends(require_roles(ROLE_FINANCE, ROLE_ADMIN))],
+)
+async def list_budget_transactions(
+    session: SessionDep,
+    budget_id: Annotated[uuid.UUID | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[BudgetTransactionOut]:
+    """最近的预算流水，**新到旧**，带申请单号。
+
+    这张表是"账目对不对得上"的唯一依据：预留、释放（含差额）、结转各一条。
+    看板上把它列出来，M7 验收里"能看到三类流水"就不再只能靠 SQL 验证。
+    """
+    rows = await catalog_coordinator(session).list_budget_transactions(
+        budget_id=budget_id, limit=limit
+    )
+    return [
+        BudgetTransactionOut(
+            id=record.id,
+            budget_id=record.budget_id,
+            request_id=record.request_id,
+            request_code=code,
+            kind=record.kind,
+            amount_fen=record.amount,
+            created_at=record.created_at,
+        )
+        for record, code in rows
+    ]
