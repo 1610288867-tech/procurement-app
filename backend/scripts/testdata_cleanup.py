@@ -71,6 +71,12 @@ from app.infrastructure.records.catalog import (  # noqa: E402
     DepartmentRecord,
     PurchaseCategoryRecord,
 )
+from app.infrastructure.records.knowledge import (  # noqa: E402
+    ChatMessageRecord,
+    ChatSessionRecord,
+    KnowledgeChunkRecord,
+    KnowledgeDocRecord,
+)
 from app.infrastructure.records.purchase import (  # noqa: E402
     IdempotencyRecord,
     PurchaseItemRecord,
@@ -85,20 +91,40 @@ PAGE_CATEGORY_PREFIX = "TCAT-PAGE-%"
 #: 浏览器自检（浏览器自检.mjs）造的数据
 SELFCHECK_CATEGORY_PREFIX = "SELFCHECK-%"
 
+#: M11 页面实测（m11-知识库实测.mjs）与集成测试造的制度文档。
+#: **按 `source_key` 前缀认**，不按标题：标题是人写的（可能重名），
+#: 而 `source_key` 是脚本自己拼的唯一标识。
+KNOWLEDGE_SOURCE_PREFIXES = ("M11PAGE-%", "M11TEST-%", "PROBE%")
+
 #: 集成测试的兜底前缀（正常情况下测试自己会清，这里防漏）
 TEST_CATEGORY_PREFIX = "TCAT-%"
 TEST_DEPARTMENT_PREFIX = "TDEP-%"
 TEST_USERNAME_PREFIX = "t-%"
 
+#: **演示用的系统管理员账号名**。
+#:
+#: 为什么要单列它：脚本与集成测试大量用 `admin` 提问（M11 的问答要一个登录账号），
+#: 于是会话与消息挂在 admin 名下积起来（实测跑几轮攒了 14 个）。
+#: 它既不是 `t-%` 测试账号、也没法按 `source_key` 前缀认 ——
+#: 所以这里**按账号名清**：演示库里 admin 的聊天记录一定是测试/演示留下的，
+#: 而真要有"管理员在用"的场合，这个清理脚本本来就不该在那台机器上跑。
+#: 只清**聊天**（会话 / 消息），不动 admin 账号与它建的其它数据。
+DEMO_ADMIN_USERNAME = "admin"
+
 
 async def _registered_keys(session: AsyncSession) -> set[str]:
-    """库里所有附件的 `storage_key`（**含已软删除的**）。
+    """库里所有**在册**的 `storage_key`：附件 + 知识库文档。
 
-    软删除的也要算"在册"：附件是审计证据，删除只是打标记，
-    磁盘上那份必须留着 —— 否则"当时到底附了什么"就真查不出来了。
+    两组都要算，因为它们**共用同一个 `uploads/` 根目录**：
+
+      · 附件（M9）：软删除的也要算"在册"—— 附件是审计证据，删除只是打标记，
+        磁盘上那份必须留着，否则"当时到底附了什么"就真查不出来了；
+      · 制度文档原文（M11）：`knowledge_docs.storage_key`。漏了它
+        就会把制度原文当成孤儿文件删掉（库里有行、文件没了）。
     """
-    rows = await session.scalars(select(AttachmentRecord.storage_key))
-    return set(rows.all())
+    attachment_rows = await session.scalars(select(AttachmentRecord.storage_key))
+    doc_rows = await session.scalars(select(KnowledgeDocRecord.storage_key))
+    return {key for key in (*attachment_rows.all(), *doc_rows.all()) if key}
 
 
 def _list_orphan_files(registered: set[str]) -> list[Path]:
@@ -106,6 +132,12 @@ def _list_orphan_files(registered: set[str]) -> list[Path]:
 
     判据是"库里有没有这条键"，不是文件名前缀 —— 磁盘上的名字是 UUID，
     本来就认不出测试数据（见 `infrastructure/object_store.py` 的说明）。
+
+    ⚠️ `registered` 必须**同时包含附件与知识库文档的 `storage_key`**：
+    两者落在同一个 `uploads/` 根目录下（M11 沿用 M9 的对象存储）。
+    只登记附件的话，**制度文档的原文会被当成孤儿文件删掉** ——
+    而 `knowledge_docs` 那一行还在，表现为"库里说有这份制度、文件却没了"，
+    等到要重新切分或人工核对时才发现（子代理实测撞到过这个组合）。
     """
     root = Path(get_settings().upload_dir)
     if not root.exists():
@@ -194,11 +226,28 @@ async def _run(scope: str, dry_run: bool) -> int:
                 )
             ).all()
         )
+        # 知识库文档（M11）：**在这里查**（而不是在后面删的那一段里），
+        # 因为它要出现在下面的汇总行里，而空跑分支也会用到这个数 ——
+        # 差值一多就会变成"删了但没报"，那种清理是没法核对的。
+        knowledge_doc_ids = list(
+            (
+                await session.scalars(
+                    select(KnowledgeDocRecord.id).where(
+                        or_(
+                            *[
+                                KnowledgeDocRecord.source_key.like(pattern)
+                                for pattern in KNOWLEDGE_SOURCE_PREFIXES
+                            ]
+                        )
+                    )
+                )
+            ).all()
+        )
 
         print(f"范围={scope}{'（空跑）' if dry_run else ''}")
         print(
             f"  匹配到：品类 {len(category_ids)} / 部门 {len(department_ids)} / "
-            f"账号 {len(user_ids)} / 申请 {len(request_ids)}"
+            f"账号 {len(user_ids)} / 申请 {len(request_ids)} / 制度文档 {len(knowledge_doc_ids)}"
         )
         if dry_run:
             names = list(
@@ -238,6 +287,58 @@ async def _run(scope: str, dry_run: bool) -> int:
                     )
                 )
             ).rowcount or 0
+
+        # ---- ②a 知识库与问答（M11）----
+        # 顺序由外键决定，**不能调**：
+        #   消息 → 会话（`chat_sessions.user_id` 是 RESTRICT，会话不清掉就删不了账号）；
+        #   片段 → 文档（片段是 CASCADE，但显式删一次让"清了多少"可核对，也免得
+        #   依赖"建表时写了 CASCADE"这件事）。
+        # 会话的清理范围 = 测试账号 ∪ 演示 admin。
+        # 后者见 `DEMO_ADMIN_USERNAME` 的说明：脚本与集成测试都用 admin 提问，
+        # 不按账号名清的话它们会一直攒着（实测几轮攒了 14 个）。
+        chat_user_ids = list(
+            (
+                await session.scalars(
+                    select(UserRecord.id).where(
+                        or_(
+                            UserRecord.id.in_(user_ids or [None]),
+                            UserRecord.username == DEMO_ADMIN_USERNAME,
+                        )
+                    )
+                )
+            ).all()
+        )
+        doomed_session_ids = select(ChatSessionRecord.id).where(
+            ChatSessionRecord.user_id.in_(chat_user_ids or [None])
+        )
+        counts["聊天消息"] = (
+            await session.execute(
+                delete(ChatMessageRecord).where(
+                    ChatMessageRecord.session_id.in_(doomed_session_ids)
+                )
+            )
+        ).rowcount or 0
+        counts["会话"] = (
+            await session.execute(
+                delete(ChatSessionRecord).where(
+                    ChatSessionRecord.user_id.in_(chat_user_ids or [None])
+                )
+            )
+        ).rowcount or 0
+        counts["制度片段"] = (
+            await session.execute(
+                delete(KnowledgeChunkRecord).where(
+                    KnowledgeChunkRecord.doc_id.in_(knowledge_doc_ids or [None])
+                )
+            )
+        ).rowcount or 0
+        counts["制度文档"] = (
+            await session.execute(
+                delete(KnowledgeDocRecord).where(
+                    KnowledgeDocRecord.id.in_(knowledge_doc_ids or [None])
+                )
+            )
+        ).rowcount or 0
 
         # ---- ② 账号：先清引用它的三张表，再删账号本身 ----
         if user_ids:

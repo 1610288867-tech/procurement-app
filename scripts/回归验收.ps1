@@ -10,8 +10,17 @@
       6) 真实服务冒烟          —— backend\scripts\m6_smoke.py（对着 8000 打 HTTP，跑完自清理）
       7) 静默失败与接缝探针     —— backend\scripts\regression_probes.py（三条"不会报错只会算错"
                                   的约束 + 四条跨阶段接缝，跑完自清理）
-      8) 浏览器自检            —— scripts\浏览器自检.mjs（无窗口 Edge + CDP，12 项）
-      9) 清理与残留回查        —— testdata_cleanup.py --scope all（残留非 0 就失败）
+      8) 浏览器自检            —— scripts\浏览器自检.mjs（无窗口 Edge + CDP，17 项）
+      9) 知识库实测（M11）      —— scripts\m11-知识库实测.mjs（自起 Edge:9333，6 项）
+     10) 窄屏自检（375×812）    —— scripts\窄屏自检.mjs（自起 Edge:9334，20 项）
+     11) 清理与残留回查        —— testdata_cleanup.py --scope all（残留非 0 就失败）
+
+  > **不在这个入口里的**：`scripts\m6-页面实测.mjs`（51 项，含 M10 全链路）。
+  > 它的数据准备较长（建品类 + 预算 + 走完整条审批链），而且**需要外部已经开好的
+  > 9222 端口上的 Edge**，与这里"自起自收"的生命周期不一样 —— 单独跑更合适，见 README。
+  >
+  > 窄屏自检原先也在这里之外（它同样要自己设视口），2026-10-06 修掉它"跑完不退出"
+  > 的毛病之后接了进来：自起 Edge、9.5 秒跑完、退出码正确。
 
   **为什么固定写死、不给 `-OnlyXxx` 之类的开关**：一有开关，就一定会出现
   "这次时间紧、少跑一项"，回归也就失去意义（实施计划 M8 的常见坑里写着这一条）。
@@ -186,9 +195,24 @@ Invoke-Step "静默失败与接缝探针 regression_probes.py（14 项，跑完�
   if ($LASTEXITCODE -ne 0) { throw "探针有未通过项" }
 } $backendDir
 
-Invoke-Step "浏览器自检 浏览器自检.mjs（12 项，无窗口 Edge）" {
+Invoke-Step "浏览器自检 浏览器自检.mjs（17 项，无窗口 Edge）" {
   node "scripts\浏览器自检.mjs"
   if ($LASTEXITCODE -ne 0) { throw "浏览器自检有未通过项" }
+}
+
+# M11 的知识库实测：上传制度 → 看切分 → 提问 → 引用卡片 → 拒答 → 会话。
+# **它自己也起一个无窗口 Edge（端口 9333）**，所以与上一步不冲突、可以连着跑。
+# 放在"清理"之前：它造的制度文档正好由下一步收掉。
+Invoke-Step "知识库实测 m11-知识库实测.mjs（6 项，无窗口 Edge）" {
+  node "scripts\m11-知识库实测.mjs"
+  if ($LASTEXITCODE -ne 0) { throw "知识库实测有未通过项" }
+}
+
+# 窄屏（375×812）：验的是"窄屏不塌"——横向不溢出、侧边栏折叠成横条、
+# 面包屑/本页导航按断点隐藏。它自起一个 Edge（端口 9334）并设视口，所以能连着跑。
+Invoke-Step "窄屏自检 窄屏自检.mjs（20 项，375×812）" {
+  node "scripts\窄屏自检.mjs"
+  if ($LASTEXITCODE -ne 0) { throw "窄屏自检有未通过项" }
 }
 
 Invoke-Step "测试数据清理与残留回查（testdata_cleanup.py --scope all）" {

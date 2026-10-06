@@ -19,12 +19,20 @@ pytestmark = pytest.mark.unit
 
 
 def test_only_the_states_we_actually_use_exist() -> None:
-    """M5 + M6 一共只该有六个状态。
+    """M5 + M6 + M10 全部子阶段：一共只该有**十二个**状态（履约链至此闭环）。
 
     一次把 12 个状态全写完，测试会非常难写，而且大部分分支没有触发路径 ——
     写了也测不到，等于给自己一个"覆盖过了"的错觉。
-    履约链那几个（AWARDED / ORDERED / RECEIVED / INVOICED / PAID / CLOSED）
-    留到 M10 用到时再加。
+
+    所以这条断言是**逐阶段往上加**的，每次加都必须同时改这里：
+    它挡的正是"顺手把履约链六个状态一次全写上"。
+    到 8.4 为止，状态机里**每一个状态都有真实代码会走到它**：
+    `SourcingCoordinator` / `FulfillmentCoordinator` / `SettlementCoordinator`
+    各负责一段，而 `PAID → CLOSED` 是 `close` 走的。
+
+    **`PARTIALLY_RECEIVED` 仍然不在里面**，而且**永远不该加**：
+    第一版只做整单收货（没收齐直接 422），所以没有"部分收货"这个状态；
+    要做它得按实施计划 5.5 节 E 的四步把状态、转移、主单判定、验收项**一起**加回来。
     """
     assert set(TRANSITIONS) == {
         RequestStatus.DRAFT,
@@ -33,6 +41,16 @@ def test_only_the_states_we_actually_use_exist() -> None:
         RequestStatus.WITHDRAWN,
         RequestStatus.SOURCING,
         RequestStatus.REJECTED,
+        # M10 / 8.1：定标的出口（`SourcingCoordinator.award` 真的会走到它）
+        RequestStatus.AWARDED,
+        # M10 / 8.2：下单与收货（`FulfillmentCoordinator` 真的会走到它们）
+        RequestStatus.ORDERED,
+        RequestStatus.RECEIVED,
+        # M10 / 8.3：登记发票（`SettlementCoordinator.add_invoice` 真的会走到它）
+        RequestStatus.INVOICED,
+        # M10 / 8.4：执行付款与归档（`SettlementCoordinator.pay` / `.close`）
+        RequestStatus.PAID,
+        RequestStatus.CLOSED,
     }
 
 
@@ -52,6 +70,19 @@ def test_every_transition_target_is_a_known_state() -> None:
         (RequestStatus.DRAFT, RequestStatus.IN_APPROVAL),
         (RequestStatus.DRAFT, RequestStatus.DISCARDED),
         (RequestStatus.IN_APPROVAL, RequestStatus.WITHDRAWN),
+        # M6：审批的两个出口
+        (RequestStatus.IN_APPROVAL, RequestStatus.SOURCING),
+        (RequestStatus.IN_APPROVAL, RequestStatus.REJECTED),
+        # M10 / 8.1：定标
+        (RequestStatus.SOURCING, RequestStatus.AWARDED),
+        # M10 / 8.2：下单与收货
+        (RequestStatus.AWARDED, RequestStatus.ORDERED),
+        (RequestStatus.ORDERED, RequestStatus.RECEIVED),
+        # M10 / 8.3：登记发票
+        (RequestStatus.RECEIVED, RequestStatus.INVOICED),
+        # M10 / 8.4：付款与归档
+        (RequestStatus.INVOICED, RequestStatus.PAID),
+        (RequestStatus.PAID, RequestStatus.CLOSED),
     ],
 )
 def test_allowed_transitions(source: RequestStatus, target: RequestStatus) -> None:

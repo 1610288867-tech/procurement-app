@@ -35,9 +35,21 @@ TRANSITIONS: dict[RequestStatus, frozenset[RequestStatus]] = {
     ),
     RequestStatus.DISCARDED: frozenset(),
     RequestStatus.WITHDRAWN: frozenset(),
-    # 履约链的出口（AWARDED / ORDERED / …）留到 M10 用到时再加
-    RequestStatus.SOURCING: frozenset(),
+    # M10 / 8.1：定标成功进 AWARDED。8.2：定标之后下单、收货。
+    RequestStatus.SOURCING: frozenset({RequestStatus.AWARDED}),
     RequestStatus.REJECTED: frozenset(),
+    RequestStatus.AWARDED: frozenset({RequestStatus.ORDERED}),
+    # ⚠️ **没有 PARTIALLY_RECEIVED**：第一版只做整单收货，
+    # 而"收了一部分"由订单/收货表的明细表达，主单**不动**
+    # （没收齐就一直停在 ORDERED）—— 留一个走不到的状态，
+    # 只会让"合法/非法转移"那批测试失去意义。
+    RequestStatus.ORDERED: frozenset({RequestStatus.RECEIVED}),
+    # M10 / 8.3：登记发票之后进 INVOICED（等待付款）。
+    RequestStatus.RECEIVED: frozenset({RequestStatus.INVOICED}),
+    # M10 / 8.4：执行付款 → PAID；归档 → CLOSED（终态）。
+    RequestStatus.INVOICED: frozenset({RequestStatus.PAID}),
+    RequestStatus.PAID: frozenset({RequestStatus.CLOSED}),
+    RequestStatus.CLOSED: frozenset(),
 }
 
 

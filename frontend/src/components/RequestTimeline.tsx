@@ -38,12 +38,23 @@ export const EVENT_LABEL: Record<string, string> = {
   APPROVAL_REJECTED: "审批驳回",
   APPROVAL_COMPLETED: "审批全部通过",
   ATTACHMENT_ADDED: "上传附件",
+  // 删除附件**也进时间线**：附件是审计证据，"曾经附过、后来删了"
+  // 本身就是必须留痕的事实 —— 否则事后查"这份合同怎么没了"永远查不出来。
+  ATTACHMENT_REMOVED: "删除附件",
 };
 
 const STATUS_LABEL: Record<string, string> = {
   DRAFT: "草稿",
   IN_APPROVAL: "审批中",
   SOURCING: "询价中",
+  // M10 的三个履约状态（与 ui.tsx 的徽章文案保持一致 —— 同一个状态在时间线与徽章上
+  // 显示成两个词，是最容易让人以为"这是两件事"的那种不一致）
+  AWARDED: "已定标",
+  ORDERED: "已下单",
+  RECEIVED: "已收货",
+  INVOICED: "已收票",
+  PAID: "已付款",
+  CLOSED: "已归档",
   REJECTED: "已驳回",
   WITHDRAWN: "已撤回",
   DISCARDED: "已丢弃",
@@ -73,7 +84,9 @@ function formatSize(bytes: unknown): string | null {
  */
 function describe(event: RequestEvent): string | null {
   const payload = event.payload ?? {};
-  if (event.event_type === "ATTACHMENT_ADDED") {
+  // 上传与删除都记了 `filename` / `size_bytes`：删除那条同样要显示文件名 ——
+  // "哪一份被删了"正是留痕要回答的问题。
+  if (event.event_type === "ATTACHMENT_ADDED" || event.event_type === "ATTACHMENT_REMOVED") {
     const name = typeof payload.filename === "string" ? payload.filename : "附件";
     const size = formatSize(payload.size_bytes);
     return size ? `${name}（${size}）` : name;

@@ -52,7 +52,7 @@ from app.domain.enums import (
 )
 from app.domain.events import APPROVAL_COMPLETED, APPROVAL_REJECTED
 from app.domain.org import descendant_ids, parent_map
-from app.domain.permissions import RequestScope
+from app.domain.permissions import RequestScope, resolve_request_scope
 from app.errors import BusinessError, ConflictError, NotFoundError, PermissionDeniedError
 
 #: 需要"按申请人部门（含子部门）"解析候选人的角色。
@@ -246,6 +246,30 @@ class ApprovalCoordinator:
         parents = parent_map((row.id, row.parent_id) for row in departments)
         return {department_id, *descendant_ids(department_id, parents)}
 
+    async def _scope_for(
+        self,
+        *,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None,
+    ) -> RequestScope:
+        """算出一个审批人的**申请可见范围**（含子部门）。
+
+        与 `PurchaseCoordinator._scope_for` 同源、同判据（都走
+        `domain/permissions.resolve_request_scope`）——
+        审批动作的可见范围必须和申请列表一致，否则会出现
+        "列表里看不到、待办里却能批"这种自相矛盾的组合。
+
+        只有 DEPARTMENT 档才需要查部门树；另外两档（全公司 / 只看自己）
+        用不上，多查一次就是白花一次往返。
+        """
+        base = resolve_request_scope(
+            roles, actor_id=actor_id, department_id=department_id
+        )
+        if base.sees_all or department_id is None:
+            return base
+        return RequestScope(department_ids=frozenset(await self._department_scope(department_id)))
+
     # ================================================================ 待办
 
     async def list_todo(
@@ -253,26 +277,43 @@ class ApprovalCoordinator:
         *,
         actor_id: uuid.UUID,
         roles: Sequence[str],
+        department_id: uuid.UUID | None = None,
         limit: int = DEFAULT_PAGE_SIZE,
         offset: int = 0,
     ) -> tuple[list[tuple[ApprovalTaskView, Any, Any]], int]:
-        """我的待办：**只列当前这一级**，且一次 JOIN 查完。"""
+        """我的待办：**只列当前这一级**、**只列本部门范围**，且一次 JOIN 查完。
+
+        `department_id` 是**部门级角色的范围来源**（`DEPT_MANAGER` / `DEPT_HEAD`）：
+        没有它，同一个角色名会跨部门看到并批掉别人的任务。
+        全公司角色（采购 / 财务 / GM / 管理员）不受影响 —— 判据在
+        `domain/permissions.resolve_visibility`，与申请列表用的是同一套。
+        """
+        scope = await self._scope_for(
+            actor_id=actor_id, roles=roles, department_id=department_id
+        )
         page_size = max(1, min(limit, MAX_PAGE_SIZE))
         rows, total = await self._approvals.list_todo(
             actor_id=actor_id,
             my_roles=list(roles),
+            scope=scope,
             limit=page_size,
             offset=max(0, offset),
         )
         return list(rows), total
 
     async def get_task_detail(
-        self, *, task_id: uuid.UUID, actor_id: uuid.UUID, roles: Sequence[str]
+        self,
+        *,
+        task_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None = None,
     ) -> tuple[ApprovalTaskView, Any, Any, Sequence[Any]]:
         """任务详情：任务 + 申请 + 品类 + 审批链全貌。
 
         非当前级 → 403：任务对他**可见**（他有这个角色），只是还没轮到他。
         连角色都不匹配 → 403 同样成立（"这条不该你审"）。
+        部门不符 → 403（与待办列表同一套范围判据：列表里看不到的，换个 id 也点不开）。
         """
         task = await self._approvals.get_task(task_id)
         if task is None:
@@ -295,7 +336,8 @@ class ApprovalCoordinator:
             task=task,
             actor_id=actor_id,
             roles=roles,
-            requester_id=request.requester_id,
+            department_id=department_id,
+            request=request,
         )
         category = await self._catalog.get_category(request.category_id)
         tasks = await self._approvals.list_tasks(flow_id=flow.id)
@@ -321,6 +363,7 @@ class ApprovalCoordinator:
         task_id: uuid.UUID,
         actor_id: uuid.UUID,
         roles: Sequence[str],
+        department_id: uuid.UUID | None = None,
         expected_version: int,
     ) -> ApprovalTaskView:
         """认领：`assignee_id` 从 NULL 置为当前用户（抢单）。
@@ -329,7 +372,10 @@ class ApprovalCoordinator:
         "所有人都要通过"与"谁抢到算谁的"语义互斥。
         """
         task, flow = await self._load_actionable(
-            task_id=task_id, actor_id=actor_id, roles=roles
+            task_id=task_id,
+            actor_id=actor_id,
+            roles=roles,
+            department_id=department_id,
         )
         if task.assignee_id is not None:
             raise ConflictError("该任务已经被认领")
@@ -366,12 +412,16 @@ class ApprovalCoordinator:
         task_id: uuid.UUID,
         actor_id: uuid.UUID,
         roles: Sequence[str],
+        department_id: uuid.UUID | None = None,
         expected_version: int,
         comment: str | None = None,
     ) -> dict[str, Any]:
         """通过：条件更新 → 判该级是否完成 → 完成则推进"当前级"或收尾整个流程。"""
         task, flow = await self._load_actionable(
-            task_id=task_id, actor_id=actor_id, roles=roles
+            task_id=task_id,
+            actor_id=actor_id,
+            roles=roles,
+            department_id=department_id,
         )
         decided = await self._approvals.decide(
             task_id=task_id,
@@ -411,6 +461,7 @@ class ApprovalCoordinator:
         task_id: uuid.UUID,
         actor_id: uuid.UUID,
         roles: Sequence[str],
+        department_id: uuid.UUID | None = None,
         expected_version: int,
         comment: str,
     ) -> dict[str, Any]:
@@ -424,7 +475,10 @@ class ApprovalCoordinator:
             raise BusinessError("驳回必须填写意见", status_code=422, code="COMMENT_REQUIRED")
 
         task, flow = await self._load_actionable(
-            task_id=task_id, actor_id=actor_id, roles=roles
+            task_id=task_id,
+            actor_id=actor_id,
+            roles=roles,
+            department_id=department_id,
         )
         decided = await self._approvals.decide(
             task_id=task_id,
@@ -471,14 +525,19 @@ class ApprovalCoordinator:
     # ================================================================ 内部
 
     async def _load_actionable(
-        self, *, task_id: uuid.UUID, actor_id: uuid.UUID, roles: Sequence[str]
+        self,
+        *,
+        task_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None = None,
     ) -> tuple[ApprovalTaskView, Any]:
         """把"这个任务现在能不能由这个人处理"一次查清。
 
         三种拒绝要分清：
           - 任务不存在 → 404
           - 不属于当前级 → **403**（可见，但还没轮到）
-          - 不属于他（角色不符 / 或签被别人认领了）→ **403**
+          - 不属于他（角色不符 / 部门不符 / 或签被别人认领了）→ **403**
         """
         task = await self._approvals.get_task(task_id)
         if task is None:
@@ -498,7 +557,8 @@ class ApprovalCoordinator:
             task=task,
             actor_id=actor_id,
             roles=roles,
-            requester_id=await self._requester_of(task.request_id, actor_id),
+            department_id=department_id,
+            request=await self._request_of(task.request_id, actor_id),
         )
         return task, flow
 
@@ -508,17 +568,27 @@ class ApprovalCoordinator:
         task: ApprovalTaskView,
         actor_id: uuid.UUID,
         roles: Sequence[str],
-        requester_id: uuid.UUID,
+        department_id: uuid.UUID | None,
+        request: Any,
     ) -> None:
         """是不是"该他审"。
 
         - **提交人本人 → 403**（职责分离：请购与审批必须分离。或签任务没有预分配人，
           只按角色可见，所以"建任务时剔除提交人"挡不住它，必须在这里也挡一次）；
         - 任务已预分配（会签）→ 必须是那个人；
-        - 未认领（或签）→ 必须持有该角色；
+        - 未认领（或签）→ 必须持有该角色，**并且看得到这张申请**；
         - 已被别人认领 → 只有认领人本人能处理。
+
+        ============================ 为什么"部门范围"只加在或签那一支 ============================
+        会签的候选人是**建链时按部门范围挑出来的**（`_department_scope`），
+        两边本来就一致；再卡一次部门只会制造"被指派了却批不了"的死结。
+        而或签**只有角色**这一个条件 —— 不补部门，同一个角色名就跨部门通行：
+        行政部门的主管能看到、也能批掉采购部那一级的任务（实测确认过的越权面）。
+
+        判定复用 `_scope_for`（与申请列表、待办列表同一套判据）：
+        部门级角色只在本部门（含子部门）内可见，全公司角色不受限。
         """
-        if actor_id == requester_id:
+        if actor_id == request.requester_id:
             raise PermissionDeniedError("申请人不能审批自己的申请（职责分离）")
         if task.assignee_id is not None:
             if task.assignee_id != actor_id:
@@ -527,14 +597,32 @@ class ApprovalCoordinator:
         if task.role not in set(roles):
             raise PermissionDeniedError(f"这条审批任务需要 {task.role} 角色")
 
-    async def _requester_of(self, request_id: uuid.UUID, actor_id: uuid.UUID) -> uuid.UUID:
-        """这条申请的提交人是谁（职责分离判定要用）。"""
+        scope = resolve_request_scope(
+            roles, actor_id=actor_id, department_id=department_id
+        )
+        if scope.sees_all:
+            return
+        if scope.only_self:
+            # 只看得到自己的单子的人，不该持有别人的审批任务
+            raise PermissionDeniedError("这条审批任务不在您的部门范围内")
+        if request.department_id not in scope.department_ids:
+            raise PermissionDeniedError(
+                "这条审批任务属于其它部门（部门级角色只能审本部门及其子部门的单子）"
+            )
+
+    async def _request_of(self, request_id: uuid.UUID, actor_id: uuid.UUID) -> Any:
+        """这条申请的记录（职责分离判定与部门范围判定都要它）。
+
+        审批模块按**全公司**范围读它（`_any_scope`）：能走到这一步的人已经是
+        "任务指向他"，读申请的**行级可见范围**是另一条正交的规则 ——
+        是否允许他动这个任务由 `_assert_can_act` 判定，不在这里重复。
+        """
         request = await self._requests.get_request(
             request_id, scope=await self._any_scope(), actor_id=actor_id
         )
         if request is None:  # pragma: no cover - 任务有外键指向申请
             raise NotFoundError("申请不存在")
-        return request.requester_id
+        return request
 
     async def _after_decision(
         self, *, flow: Any, step_order: int, actor_id: uuid.UUID

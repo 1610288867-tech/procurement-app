@@ -51,7 +51,7 @@ from app.domain.budget_policy import (
     resolve_budget_year,
 )
 from app.domain.enums import RequestStatus
-from app.domain.events import ATTACHMENT_ADDED
+from app.domain.events import ATTACHMENT_ADDED, ATTACHMENT_REMOVED
 from app.domain.org import descendant_ids, parent_map
 from app.domain.permissions import (
     RequestScope,
@@ -871,6 +871,78 @@ class PurchaseCoordinator:
             raise PermissionDeniedError("无权访问该附件")
 
         return attachment, self._objects.load(attachment.storage_key)
+
+    async def remove_attachment(
+        self,
+        *,
+        attachment_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None,
+    ) -> AttachmentView:
+        """删除附件。**软删除**（写 `deleted_at`），磁盘上的文件留着。
+
+        ============================ 谁能删 ============================
+        与读取**同一条判定**：能看到这张申请，就能删它挂的附件。
+        上传用的也是这条（见 `upload_attachment`）—— 三处口径一致，
+        不会出现"能传不能删"或"看不到却能删"这种自相矛盾的组合。
+
+        越权语义照抄读取那条：
+            附件不存在 / 已被删        → 404
+            附件在，但它挂的申请看不到  → **403**
+            看得到                     → 删除
+
+        ============================ 为什么是软删除 ============================
+        附件是审计证据（报价单、合同、发票）。物理删除会让"当时到底附了什么"
+        永远查不出来 —— 计划里"常见坑"第 8 条写的就是这条。
+
+        代价是**磁盘不会因为删除而变小**。这是刻意的取舍：留痕优先。
+        真要回收空间，那是运维动作（"哪些文件在册"的判据见
+        `scripts/testdata_cleanup.py` 的孤儿文件清理）。
+
+        ============================ 为什么要写事件 ============================
+        只标记删除、不写事件的话，时间线上看不出任何变化 ——
+        事后查"这份合同怎么没了"就永远查不出来。
+        事件里的 `filename` 是**删除那一刻**的快照。
+        """
+        if self._attachments is None:
+            raise BusinessError(
+                "附件功能未启用（未装配对象存储）", status_code=503, code="ATTACHMENT_DISABLED"
+            )
+        attachment = await self._attachments.get(attachment_id)
+        if attachment is None:
+            raise NotFoundError(f"附件不存在：{attachment_id}")
+
+        scope = await self._scope_for(
+            actor_id=actor_id, roles=roles, department_id=department_id
+        )
+        record = await self._requests.get_request(
+            attachment.request_id, scope=scope, actor_id=actor_id
+        )
+        if record is None:
+            raise PermissionDeniedError("无权删除该附件")
+
+        # 条件更新：`deleted_at IS NULL` 在 WHERE 里。返回 False = 别人已经删过了。
+        # 这里报 **404 而不是 409**：对调用方来说"你要删的东西已经没了"与
+        # "它从来不存在"是同一件事，而且这样重试是幂等的（第二次同样 404）。
+        if not await self._attachments.soft_delete(attachment_id):
+            raise NotFoundError(f"附件不存在：{attachment_id}")
+
+        await self._events.append(
+            request_id=attachment.request_id,
+            event_type=ATTACHMENT_REMOVED,
+            actor_id=actor_id,
+            from_status=record.status,
+            to_status=record.status,
+            payload={
+                "attachment_id": str(attachment.id),
+                "filename": attachment.original_filename,
+                "size_bytes": attachment.size_bytes,
+                "kind": attachment.kind,
+            },
+        )
+        await self._uow.commit()
+        return attachment
 
     async def _build_approval_chain(
         self,

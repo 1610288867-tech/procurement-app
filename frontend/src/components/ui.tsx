@@ -397,17 +397,28 @@ export function StatusBadge({ active }: { active: boolean }) {
   );
 }
 
-/** 采购申请状态的中文名与配色（M5 建，M6 补两个）。
+/** 采购申请状态的中文名与配色（M5 建，M6 补两个，M10 补三个履约状态）。
  *
  * 六种状态用六种观感，但只从既有语义色里取：草稿中性、审批中偏提示、
  * 撤回/丢弃是终态但不代表出错（所以用中性灰而不是红色）。
  * **红色只留给"被驳回"**（M6）—— 那才是需要人立刻处理的；
  * `SOURCING`（审批通过、进入询价）用成功色，它是这条申请第一次"往前走"。
+ *
+ * M10 的三个履约状态都沿用成功色：它们都是"事情在往前走"，
+ * 与 `SOURCING` 同一类观感 —— 配色不为了区分而区分，**要区分的是"要不要人处理"**。
+ * （不加这三行的话，徽章会原样显示 `AWARDED` 这样的英文码：`?? status` 是兜底，
+ *   它保证不崩，但不保证好看。）
  */
 const REQUEST_STATUS_STYLE: Record<string, { label: string; className: string }> = {
   DRAFT: { label: "草稿", className: "bg-section text-muted" },
   IN_APPROVAL: { label: "审批中", className: "bg-warning-bg text-warning" },
   SOURCING: { label: "询价中", className: "bg-success-bg text-success" },
+  AWARDED: { label: "已定标", className: "bg-success-bg text-success" },
+  ORDERED: { label: "已下单", className: "bg-success-bg text-success" },
+  RECEIVED: { label: "已收货", className: "bg-success-bg text-success" },
+  INVOICED: { label: "已收票", className: "bg-success-bg text-success" },
+  PAID: { label: "已付款", className: "bg-success-bg text-success" },
+  CLOSED: { label: "已归档", className: "bg-section text-muted" },
   REJECTED: { label: "已驳回", className: "bg-danger-bg text-danger" },
   WITHDRAWN: { label: "已撤回", className: "bg-section text-faint" },
   DISCARDED: { label: "已丢弃", className: "bg-section text-faint" },

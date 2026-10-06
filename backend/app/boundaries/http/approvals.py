@@ -197,9 +197,16 @@ async def list_tasks(
     **只列当前这一级**：这张单子走到第几级由 `approval_flows.current_step_order` 决定，
     还没轮到的高级别不会出现在这里。少了这个条件，第 4 级的财务会在第 1 级还没批完时
     就看到待办，而且点了"通过"真的会生效。
+
+    **并且只列本部门范围**（2026-10-04 补）：`DEPT_MANAGER` / `DEPT_HEAD` 是部门级角色，
+    范围由登录账号的部门推导（子部门一并算上）—— 部门只从登录态取，**不接受客户端参数**。
     """
     rows, total = await approval_coordinator(session).list_todo(
-        actor_id=user.id, roles=user.roles, limit=limit, offset=offset
+        actor_id=user.id,
+        roles=user.roles,
+        department_id=user.department_id,
+        limit=limit,
+        offset=offset,
     )
     return TodoPageOut(
         items=[
@@ -220,7 +227,10 @@ async def get_task(
     task_id: uuid.UUID, user: CurrentUser, session: SessionDep
 ) -> TaskDetailOut:
     task, request, category, steps = await approval_coordinator(session).get_task_detail(
-        task_id=task_id, actor_id=user.id, roles=user.roles
+        task_id=task_id,
+        actor_id=user.id,
+        roles=user.roles,
+        department_id=user.department_id,
     )
     assignee_name = None
     if task.assignee_id is not None:
@@ -252,6 +262,7 @@ async def claim_task(
         task_id=task_id,
         actor_id=user.id,
         roles=user.roles,
+        department_id=user.department_id,
         expected_version=payload.version,
     )
     return TaskOut.model_validate(task)
@@ -276,6 +287,7 @@ async def approve_task(
         task_id=task_id,
         actor_id=user.id,
         roles=user.roles,
+        department_id=user.department_id,
         expected_version=payload.version,
         comment=payload.comment,
     )
@@ -296,6 +308,7 @@ async def reject_task(
         task_id=task_id,
         actor_id=user.id,
         roles=user.roles,
+        department_id=user.department_id,
         expected_version=payload.version,
         comment=payload.comment,
     )

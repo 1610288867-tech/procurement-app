@@ -21,7 +21,12 @@ from app.infrastructure.records import approval as _approval  # noqa: F401  auto
 from app.infrastructure.records import attachment as _attachment  # noqa: F401  autogenerate
 from app.infrastructure.records import auth as _auth  # noqa: F401  autogenerate
 from app.infrastructure.records import catalog  # noqa: F401  autogenerate
+from app.infrastructure.records import fulfillment as _fulfillment  # noqa: F401  autogenerate
+from app.infrastructure.records import invoice as _invoice  # noqa: F401  autogenerate
+from app.infrastructure.records import knowledge as _knowledge  # noqa: F401  autogenerate
+from app.infrastructure.records import payment as _payment  # noqa: F401  autogenerate
 from app.infrastructure.records import purchase as _purchase  # noqa: F401  autogenerate
+from app.infrastructure.records import sourcing as _sourcing  # noqa: F401  autogenerate
 from app.infrastructure.records.base import Base
 
 config = context.config

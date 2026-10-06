@@ -31,9 +31,15 @@ from app.domain.enums import (
     TASK_PENDING,
     TASK_REJECTED,
 )
+from app.domain.permissions import RequestScope
 from app.infrastructure.records.approval import ApprovalFlowRecord, ApprovalTaskRecord
 from app.infrastructure.records.catalog import PurchaseCategoryRecord
 from app.infrastructure.records.purchase import PurchaseRequestRecord
+
+# 部门范围条件的**唯一落点**在采购仓库里（`_scope_conditions`），这里直接复用。
+# 为什么不各写一份：那是"权限必须写进 WHERE"的实现，抄一份就多一处会漂移的规则 ——
+# 两处不一致时，其中一处必然是越权，而且不会报错。
+from app.infrastructure.repositories.purchase_repo import _scope_conditions
 
 
 class ApprovalRepository:
@@ -171,20 +177,30 @@ class ApprovalRepository:
         *,
         actor_id: uuid.UUID,
         my_roles: Sequence[str],
+        scope: RequestScope,
         limit: int,
         offset: int,
     ) -> tuple[list[tuple[ApprovalTaskRecord, PurchaseRequestRecord, PurchaseCategoryRecord]], int]:
         """我的待办：**一次 JOIN 查完**，并**只取当前这一级**。
 
-        两个条件都关键：
+        三个条件都关键：
 
         - `step_order == flow.current_step_order`（规则 6）：少了它，第 4 级的财务
           在自己还没轮到时就拿到待办，而且点了"通过"真的会生效；
+        - **部门范围**（2026-10-04 补）：`DEPT_MANAGER` / `DEPT_HEAD` 是**部门级角色**
+          —— 建链时引擎把它们解析成"该部门及其子部门里的人"，可**办的时候**
+          如果只校验"你有没有这个角色"，同一个角色名就会跨部门通行
+          （行政部门的主管能看到、能批掉采购部那一级的任务）。
+          任务表里只有 `role`，**不携带部门**，所以范围必须由**申请所属部门**推出来。
+          这条此前是绿的，只因为开发库里恰好没有别的部门停在同一级。
         - 三个 JOIN：待办列表要显示金额、申请人、品类。写成"查出 20 条任务再逐条查申请"
           就是经典的 N+1（20 条任务 → 21 条查询）。
 
         `my_roles` 为空时只按 `assignee_id` 匹配：会签的任务建的时候就预分配了人，
         所以会签人拿得到；或签（NULL + 角色）则需要角色。
+
+        ⚠️ 部门范围对**已预分配**（会签）的任务同样生效 —— 但那是安全的：
+        会签的候选人本来就是建链时按部门范围挑出来的，两边一致。
         """
         candidates = [ApprovalTaskRecord.assignee_id == actor_id]
         if my_roles:
@@ -215,6 +231,8 @@ class ApprovalRepository:
                 # ★ 规则 6：只取"当前这一级"
                 ApprovalTaskRecord.step_order == ApprovalFlowRecord.current_step_order,
                 visibility,
+                # ★ 部门范围：部门级角色只在本部门（含子部门）内可见
+                *_scope_conditions(scope, actor_id=actor_id),
                 # ★ 职责分离（2026-10-03）：提交人不能审自己的申请。
                 # 或签（SINGLE）任务建的时候 `assignee_id` 是 NULL、只按角色可见，
                 # 所以"建任务时剔除提交人"挡不住它 —— 必须在这里也排掉。

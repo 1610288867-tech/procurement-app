@@ -11,7 +11,7 @@
 构造函数变长，并没有换来实际的可替换性。
 """
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -61,6 +61,8 @@ class CatalogRepositoryPort(Protocol):
     async def list_suppliers(
         self, *, only_active: bool = True, only_qualified: bool = True
     ) -> Sequence[SupplierView]: ...
+
+    async def get_supplier(self, supplier_id: Any) -> SupplierView | None: ...
 
     async def create_supplier(
         self,
@@ -259,6 +261,73 @@ class ObjectStorePort(Protocol):
     def delete(self, key: str) -> bool: ...
 
 
+class ChatModelPort(Protocol):
+    """生成回答的模型（M11）。`application` 只认这个协议，不认是哪一家。
+
+    ============================ 实现者**不得**绕过溯源策略 ============================
+    调用方（协调者）在调它**之前**已经判定"有依据、可以问模型"，
+    在它**之后**还要做引用校验。所以实现只负责"把 Prompt 送出去、把文本流回来"，
+    绝不负责决定"该不该答" —— 那条判断只有一处（`domain/grounded_answer`）。
+
+    流式（`AsyncIterator[str]`）而不是返回整段：界面要逐字显示，
+    而"先攒完再切块"会让首字延迟等于整段生成时间。
+    """
+
+    #: 模型标识（进日志与 `chat_messages`，事后能分辨回答是谁生成的）
+    name: str
+
+    def stream(
+        self, *, system_prompt: str, user_prompt: str, sources: Sequence[Any]
+    ) -> AsyncIterator[str]: ...
+
+
+class QuotationView(Protocol):
+    """供应商报价（M10 / 8.1）。"""
+
+    id: Any
+    request_id: Any
+    supplier_id: Any
+    amount: int
+    currency: str
+    status: str
+    valid_until: datetime | None
+    attachment_id: Any
+    created_by: Any
+    created_at: datetime
+
+
+class QuotationRepositoryPort(Protocol):
+    """比价与定标的数据访问。
+
+    `mark_awarded` 与 `mark_not_selected` 是**条件更新**：
+    定标这件事必须靠"受影响行数"判胜负，不能先查再写
+    （两个人同时定标会各写一个 SELECTED，而主单只能有一个成交供应商）。
+    """
+
+    async def list_for_request(self, request_id: Any) -> Sequence[QuotationView]: ...
+
+    async def get(self, quotation_id: Any, *, populate_existing: bool = False) -> QuotationView | None: ...
+
+    async def selected_of(self, request_id: Any) -> QuotationView | None: ...
+
+    async def create(
+        self,
+        *,
+        request_id: Any,
+        supplier_id: Any,
+        amount_fen: int,
+        valid_until: datetime | None,
+        attachment_id: Any,
+        created_by: Any,
+    ) -> QuotationView: ...
+
+    async def expire_overdue(self, request_id: Any) -> int: ...
+
+    async def mark_awarded(self, quotation_id: Any) -> bool: ...
+
+    async def mark_not_selected(self, request_id: Any, *, keep_id: Any) -> int: ...
+
+
 class PurchaseRepositoryPort(Protocol):
     # ---- 主单 ----
     async def create_request(
@@ -400,6 +469,7 @@ class ApprovalRepositoryPort(Protocol):
         *,
         actor_id: Any,
         my_roles: Sequence[str],
+        scope: RequestScope,
         limit: int,
         offset: int,
     ) -> tuple[

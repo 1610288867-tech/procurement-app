@@ -69,6 +69,13 @@ function Workbench() {
     me.data?.roles.some((role) => role === "FINANCE" || role === "ADMIN"),
   );
   const isAdmin = Boolean(me.data?.roles.includes("ADMIN"));
+  // M10：履约三个角色之一 —— 与 `App.tsx` 的菜单判断、`router.tsx` 的路由守卫同源。
+  const canFulfill = Boolean(
+    me.data?.roles.some(
+      (role) =>
+        role === "PROCUREMENT" || role === "RECEIVER" || role === "FINANCE",
+    ),
+  );
 
   // 只取姓名里的"姓 + 名"（后端存的是全名），问好用全名略显生硬
   const name = me.data?.full_name ?? "";
@@ -103,6 +110,15 @@ function Workbench() {
             title="我的待办"
             detail="只显示现在轮到您的那一级"
           />
+          {/* M10：三个履约角色之一才出现。放到"我的待办"之后 ——
+              它是**审批通过之后**的下一段活，顺序上自然接在后面。 */}
+          {canFulfill && (
+            <Shortcut
+              to="/fulfillment"
+              title="履约工作台"
+              detail="询价定标 / 下单收货 / 收票匹配 / 付款归档"
+            />
+          )}
           {isFinanceOrAdmin ? (
             <Shortcut
               to="/budgets"

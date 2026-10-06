@@ -125,3 +125,19 @@ def resolve_request_scope(
             department_ids=frozenset({department_id, *sub_department_ids})
         )
     return RequestScope(only_self=True)
+
+
+def needs_department_subtree(
+    roles: Iterable[str], *, department_id: uuid.UUID | None
+) -> bool:
+    """要不要为这个用户去查部门树（只有 DEPARTMENT 档需要）。
+
+    单独一个函数，是为了让"要不要多花一次查询"这件事**判断一次、各处一致**：
+    先前每个协调者各写一遍同样的 `if sees_all or department_id is None`，
+    抄漏一处就会让某个模块的可见范围**少了子部门**
+    （表现为"后勤组看不到行政部主管该看的单子"，不报错、只是查不到）。
+    """
+    base = resolve_request_scope(
+        roles, actor_id=uuid.UUID(int=0), department_id=department_id
+    )
+    return not base.sees_all and department_id is not None

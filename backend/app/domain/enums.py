@@ -21,13 +21,29 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-# 采购申请主单状态（M5 四个 + M6 两个；其余状态随 M7–M10 逐步加）
+# ============================ 付款状态（M10 / 8.4，实施计划 2455-2461） ============================
+PAYMENT_PENDING = "PENDING"  # 刚创建，还没付
+PAYMENT_PAID = "PAID"  # 已执行付款
+#: 付款尝试失败（**保留痕迹，允许重新发起**）。
+#: ⚠️ 这一档与 `uq_payment_active` 的部分唯一索引是配套的：
+#: 索引的条件是 `status <> 'FAILED'`，所以失败之后还能再建付款单 ——
+#: 普通 `UNIQUE(request_id)` 会让"允许重新发起"这条规则**根本执行不了**。
+PAYMENT_FAILED = "FAILED"
+PAYMENT_STATUSES: tuple[str, ...] = (PAYMENT_PENDING, PAYMENT_PAID, PAYMENT_FAILED)
+
+# 采购申请主单状态（M5 四个 + M6 两个 + M10 履约链全部）
 STATUS_DRAFT = "DRAFT"
 STATUS_IN_APPROVAL = "IN_APPROVAL"
 STATUS_DISCARDED = "DISCARDED"
 STATUS_WITHDRAWN = "WITHDRAWN"
 STATUS_SOURCING = "SOURCING"  # 审批通过，进入询价 / 定标（M6）
 STATUS_REJECTED = "REJECTED"  # 任一级驳回（M6）
+STATUS_AWARDED = "AWARDED"  # 已定标，等待下单（M10 / 8.1）
+STATUS_ORDERED = "ORDERED"  # 已下单，等待收货（M10 / 8.2）
+STATUS_RECEIVED = "RECEIVED"  # 已收货，等待发票（M10 / 8.2）
+STATUS_INVOICED = "INVOICED"  # 已收到发票，等待付款（M10 / 8.3）
+STATUS_PAID = "PAID"  # 已付款，等待归档（M10 / 8.4）
+STATUS_CLOSED = "CLOSED"  # 已归档（终态）
 
 
 class RequestStatus(StrEnum):
@@ -44,6 +60,16 @@ class RequestStatus(StrEnum):
     WITHDRAWN = STATUS_WITHDRAWN
     SOURCING = STATUS_SOURCING
     REJECTED = STATUS_REJECTED
+    AWARDED = STATUS_AWARDED
+    ORDERED = STATUS_ORDERED
+    RECEIVED = STATUS_RECEIVED
+    INVOICED = STATUS_INVOICED
+    PAID = STATUS_PAID
+    CLOSED = STATUS_CLOSED
+    # ⚠️ 到此为止是**全部** 12 个状态里的 11 个正常态。
+    # `PARTIALLY_RECEIVED` **永远不该加**：第一版只做整单收货，
+    # 留一个走不到的状态会让"合法/非法转移"那批测试失去意义
+    # （`domain/state_machine.py` 的文件头写了这条纪律）。
 
 
 #: 审批任务状态（M6）。

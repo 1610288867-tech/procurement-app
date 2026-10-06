@@ -97,7 +97,12 @@ class PurchaseRepository:
         return f"{_CODE_PREFIX}-{datetime.now(UTC).year}-{uuid.uuid4().hex[:8].upper()}"
 
     async def get_request(
-        self, request_id: uuid.UUID, *, scope: RequestScope, actor_id: uuid.UUID
+        self,
+        request_id: uuid.UUID,
+        *,
+        scope: RequestScope,
+        actor_id: uuid.UUID,
+        populate_existing: bool = False,
     ) -> PurchaseRequestRecord | None:
         """按 id 取，**同时限定可见范围**。
 
@@ -107,11 +112,18 @@ class PurchaseRepository:
         它曾经是可选的，结果漏传时条件退化成"恒假"，接口一律 404 ——
         这正是"权限兜底往窄里兜"的效果：不会越权，但会静默地什么都查不到。
         把它改成必填，漏传就在类型检查阶段暴露，而不是等到页面上什么都没有。
+
+        `populate_existing=True` 用于**刚做完 bulk UPDATE 之后立刻回读**的场景
+        （例如定标把主单推到 AWARDED）：条件更新用的是 `synchronize_session=False`，
+        会话里那份对象还是旧值，而它已在身份映射里 —— 普通查询会把它原样还回来，
+        于是响应显示"定标没生效"。这个坑在 M5 / M6 各踩过一次。
         """
         statement = select(PurchaseRequestRecord).where(
             PurchaseRequestRecord.id == request_id,
             *_scope_conditions(scope, actor_id=actor_id),
         )
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
         return (await self.session.scalars(statement)).one_or_none()
 
     async def list_requests(

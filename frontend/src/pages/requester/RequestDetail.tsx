@@ -27,12 +27,26 @@ import { newIdempotencyKey } from "../../lib/idempotency";
 import { ApprovalTimeline } from "../../components/ApprovalTimeline";
 import { AttachmentSection } from "../../components/AttachmentSection";
 import { RequestTimeline } from "../../components/RequestTimeline";
+
+/** 履约链上的状态（M10）：这些情况下这张单子已经进了"审批通过之后"的流程，
+ *  详情页要给一个跳去履约工作台的入口。**与后端状态机同源** ——
+ *  `SOURCING` 之前的单子没有履约可做，给入口只会让人点进去看到空工作台。 */
+const FULFILLMENT_STATUSES = [
+  "SOURCING",
+  "AWARDED",
+  "ORDERED",
+  "RECEIVED",
+  "INVOICED",
+  "PAID",
+  "CLOSED",
+];
 import {
   Button,
   Card,
   Cell,
   ErrorNote,
   Field,
+  HintNote,
   Input,
   Loading,
   PageHeader,
@@ -430,6 +444,36 @@ export default function RequestDetail() {
             </Card>
           )}
 
+          {/* 履约链（M10）：审批通过之后这张单子会走到询价 / 订单 / 收货 / 发票 / 付款。
+              这里只放一个**跳转入口**，不把整条链嵌进详情页 ——
+              履约的每一步都有它自己的表单与角色（采购 / 收货 / 财务），
+              嵌进来会让"谁能操作哪一步"在同一个页面里说不清。
+              `?request=<id>` 让工作台一进去就展开这一张。 */}
+          {FULFILLMENT_STATUSES.includes(request.status) && (
+            <Card
+              title="履约进度"
+              id="section-fulfillment"
+              description="询价定标 → 下单收货 → 收票匹配 → 付款归档，都在履约工作台里做。"
+            >
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                <RequestStatusBadge status={request.status} />
+                <Link
+                  className="text-primary hover:underline"
+                  to={`/fulfillment?request=${request.id}`}
+                >
+                  在履约工作台里打开这笔单子 →
+                </Link>
+              </div>
+              <div className="mt-3">
+                <HintNote>
+                  能不能操作某一步取决于你的角色（采购 / 收货 / 财务），
+                  以及这张单子当前走到哪一步。后端每一步都会独立校验，
+                  这里只是把入口放在顺手的地方。
+                </HintNote>
+              </div>
+            </Card>
+          )}
+
           {/* 附件（M9）：报价单、合同、发票。草稿阶段也能传 —— 报价单往往
               在提交前就先拿到了，没有理由卡到提交之后。 */}
           <Card
@@ -456,6 +500,11 @@ export default function RequestDetail() {
             ...(request.status === "DRAFT"
               ? []
               : [{ id: "section-approval", label: "审批进度" }]),
+            // 履约进度只在已经进链的单子上出现 —— 目录里挂一个点了没反应的条目
+            // 比不给更糟（用户会以为页面坏了）
+            ...(FULFILLMENT_STATUSES.includes(request.status)
+              ? [{ id: "section-fulfillment", label: "履约进度" }]
+              : []),
             { id: "section-attachments", label: "附件" },
             { id: "section-timeline", label: `时间线（${detail.data.timeline.length}）` },
           ]}

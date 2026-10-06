@@ -664,6 +664,152 @@ async def test_soft_deleted_attachment_disappears_from_list_and_download(
         assert row is not None and row.deleted_at is not None
 
 
+# ================================================================ 3.5 删除附件（接口层）
+
+
+async def test_delete_endpoint_removes_it_from_list_and_keeps_the_file(
+    world: World, upload_dir: Path
+) -> None:
+    """`DELETE /api/v1/attachments/{id}` → **204**；列表里没了、下载 404。
+
+    关键的一条：**磁盘上的文件必须还在**（软删除）。
+    物理删掉的话"当时附了什么"就永远查不出来 —— 这条断言就是那条纪律的守门人。
+    """
+    request = await _draft(world.requester, world)
+    uploaded = await _upload(
+        world.requester,
+        request["id"],
+        filename="要删的报价单.pdf",
+        content=PDF_BYTES,
+        content_type="application/pdf",
+    )
+    attachment_id = uploaded.json()["id"]
+    assert len([path for path in upload_dir.rglob("*") if path.is_file()]) == 1
+
+    deleted = await world.requester.delete(f"/api/v1/attachments/{attachment_id}")
+    assert deleted.status_code == 204, deleted.text
+    assert deleted.content == b""
+
+    listed = await world.requester.get(f"/api/v1/requests/{request['id']}/attachments")
+    assert listed.status_code == 200
+    assert listed.json() == []
+    assert (
+        await world.requester.get(f"/api/v1/attachments/{attachment_id}/download")
+    ).status_code == 404
+
+    # 文件还在（软删除），行也还在（只是 deleted_at 非空）
+    assert len([path for path in upload_dir.rglob("*") if path.is_file()]) == 1
+    async with SessionFactory() as session:
+        row = await session.get(AttachmentRecord, uuid.UUID(attachment_id))
+        assert row is not None and row.deleted_at is not None
+
+
+async def test_delete_is_idempotent_and_reports_404_on_second_call(world: World) -> None:
+    """再删一次 → **404**（不是 409、更不是 500）。
+
+    "你要删的东西已经没了"与"它从来不存在"对调用方是同一件事，
+    而且这样重试天然幂等。
+    """
+    request = await _draft(world.requester, world)
+    uploaded = await _upload(
+        world.requester,
+        request["id"],
+        filename="删两次.pdf",
+        content=PDF_BYTES,
+        content_type="application/pdf",
+    )
+    attachment_id = uploaded.json()["id"]
+
+    assert (
+        await world.requester.delete(f"/api/v1/attachments/{attachment_id}")
+    ).status_code == 204
+    second = await world.requester.delete(f"/api/v1/attachments/{attachment_id}")
+    assert second.status_code == 404, second.text
+
+
+async def test_delete_by_an_outsider_is_403_and_the_attachment_survives(
+    world: World,
+) -> None:
+    """外部门账号删 → **403**，而且附件**必须还在**（不能"报了错却删掉了"）。"""
+    request = await _draft(world.requester, world)
+    uploaded = await _upload(
+        world.requester,
+        request["id"],
+        filename="别人删不掉.pdf",
+        content=PDF_BYTES,
+        content_type="application/pdf",
+    )
+    attachment_id = uploaded.json()["id"]
+
+    denied = await world.outsider.delete(f"/api/v1/attachments/{attachment_id}")
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "FORBIDDEN"
+
+    still_there = await world.requester.get(
+        f"/api/v1/attachments/{attachment_id}/download"
+    )
+    assert still_there.status_code == 200
+    assert still_there.content == PDF_BYTES
+
+
+async def test_delete_writes_a_timeline_event(world: World) -> None:
+    """删除要留痕：时间线多一条 `ATTACHMENT_REMOVED`，且**不改变状态**。
+
+    没有这条事件的话，"这份合同怎么没了"事后永远查不出来 ——
+    行被标记了、文件还在，但时间线上一片安静。
+    """
+    request = await _draft(world.requester, world)
+    uploaded = await _upload(
+        world.requester,
+        request["id"],
+        filename="留痕.pdf",
+        content=PDF_BYTES,
+        content_type="application/pdf",
+    )
+    attachment_id = uploaded.json()["id"]
+
+    before = (
+        await world.requester.get(f"/api/v1/requests/{request['id']}/timeline")
+    ).json()
+    assert (
+        await world.requester.delete(f"/api/v1/attachments/{attachment_id}")
+    ).status_code == 204
+    after = (
+        await world.requester.get(f"/api/v1/requests/{request['id']}/timeline")
+    ).json()
+
+    events = after["events"]
+    assert len(events) == len(before["events"]) + 1
+    last = events[-1]
+    assert last["event_type"] == "ATTACHMENT_REMOVED"
+    assert last["from_status"] == last["to_status"], "删除事件不该伪装成状态迁移"
+    assert last["payload"]["attachment_id"] == attachment_id
+    assert last["payload"]["filename"] == "留痕.pdf"
+    # 上传那条事件仍在：删的是附件，不是历史
+    assert any(
+        event["event_type"] == "ATTACHMENT_ADDED" for event in events
+    ), "上传那条事件不能被删掉"
+
+
+async def test_delete_of_unknown_attachment_is_404(world: World) -> None:
+    response = await world.requester.delete(f"/api/v1/attachments/{uuid.uuid4()}")
+    assert response.status_code == 404, response.text
+
+
+async def test_delete_without_login_is_401(world: World) -> None:
+    request = await _draft(world.requester, world)
+    uploaded = await _upload(
+        world.requester,
+        request["id"],
+        filename="a.pdf",
+        content=PDF_BYTES,
+        content_type="application/pdf",
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anon:
+        response = await anon.delete(f"/api/v1/attachments/{uploaded.json()['id']}")
+    assert response.status_code == 401, response.text
+
+
 async def test_uploads_directory_is_not_served_statically(world: World, upload_dir: Path) -> None:
     """验收 7：直接访问 `/uploads/<文件名>` **拿不到文件**。
 

@@ -20,6 +20,17 @@ markers = [
 ]
 # 默认只跑毫秒级的纯函数测试，于是 `pytest` 这个最常敲的命令永远秒回。
 # 跑全量：pytest -m ""   只跑集成：pytest -m integration
+#
+# ============================ 关于 `tmp_path` 落在仓库里 ============================
+# **本机实测**：这个受限沙箱里 `tempfile.gettempdir()` 返回的是**当前工作目录**
+# （TEMP/TMP 都指向 %LOCALAPPDATA%\Temp 且可写，Python 仍然不用它们），
+# 于是 pytest 的 `tmp_path` 会落在 `backend/pytest-of-<用户>/` ——
+# 一跑测试就在仓库里多出一棵临时目录树（里面是空目录，删掉无影响）。
+#
+# 试过在这里写 `--basetemp=${TEMP}/…`：**pytest 不展开 `${TEMP}`**，
+# 会把那个字面量当路径建出来（`FileNotFoundError`，实测 29 个用例全 ERROR），
+# 所以配置这条路走不通。真正兜底的是 `.gitignore` 里的 `pytest-of-*/`：
+# 脏文件不进版本库，要清就删那一棵目录。
 addopts = "-m unit"
 testpaths = ["tests"]
 

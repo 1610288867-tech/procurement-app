@@ -135,6 +135,35 @@ async def list_attachments(
     return [AttachmentOut.of(row) for row in rows]
 
 
+@router.delete(
+    "/api/v1/attachments/{attachment_id}",
+    status_code=204,
+    summary="删除附件（**软删除**：留审计痕迹，磁盘文件不删）",
+    responses={
+        403: {"description": "附件存在，但它挂的申请不在你的可见范围内"},
+        404: {"description": "不存在，或已被删除（删除是幂等的）"},
+    },
+)
+async def delete_attachment(
+    attachment_id: uuid.UUID, user: CurrentUser, session: SessionDep
+) -> Response:
+    """删除附件。
+
+    **204 而不是 200**：元数据已经没意义了，没有响应体可给。
+
+    **软删除**：库里标记 `deleted_at`，磁盘文件留着 —— 附件是审计证据。
+    与"看不到就删不了"配套的是：时间线上会留下一条 `ATTACHMENT_REMOVED`，
+    所以"传过又删了"这件事本身仍然可查。
+    """
+    await purchase_coordinator(session).remove_attachment(
+        attachment_id=attachment_id,
+        actor_id=user.id,
+        roles=user.roles,
+        department_id=user.department_id,
+    )
+    return Response(status_code=204)
+
+
 @router.get(
     "/api/v1/attachments/{attachment_id}/download",
     summary="下载附件（鉴权；一律作为附件下载，不内联渲染）",

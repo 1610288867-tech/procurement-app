@@ -113,7 +113,14 @@ function refreshAccessToken(): Promise<boolean> {
   return refreshing;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** 发一次请求并解出 JSON。
+ *
+ * **导出**出去的用途：`fulfillment.ts`（M10 履约链）需要用它拼路由。
+ * 那条链一次加了 17 条路由，全堆进本文件会让它变成"什么都往里塞"的地方 ——
+ * 而它承担的本来就是鉴权续期、上传进度、统一错误体这些**横向**职责。
+ * 分部委之后，横的东西留在这里，竖的业务各自成文件。
+ */
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response = await send(path, init);
 
   if (response.status === 401 && !AUTH_PATHS.has(path)) {
@@ -170,6 +177,117 @@ export function filenameFromDisposition(header: string | null): string | null {
   const plain = /filename="([^"]*)"/i.exec(header);
   if (plain?.[1]) return plain[1];
   return null;
+}
+
+// ------------------------------------------------------- 上传进度（M9 进度条）
+
+/** 上传进度注册表。
+ *
+ * ============================ 为什么需要它 ============================
+ * **`fetch` 没有上传进度。** 想在界面上显示"传到 40% 了"只有两条路：
+ * 换 `XMLHttpRequest`（它有 `upload.onprogress`），或者把文件切片自己拼。
+ * 10 MB 以内用前者就够，也不用多引一个依赖。
+ *
+ * ============================ 为什么是注册表而不是回调参数 ============================
+ * 进度是**随时间连续变化的值**，天生适合"订阅"而不是"回调一次"：
+ * 组件按上传令牌订阅，XHR 每次推进就通知一次。
+ * 把回调当参数传进 `uploadAttachment` 的话，它就成了这个 API 的一部分，
+ * 而本模块其余部分（`request()`）对"进度"一无所知 —— 不该为一次上传破例。
+ *
+ * 用法见 `AttachmentSection`：`newUploadToken()` → `onUploadProgress()` → 上传 → 退订。
+ */
+type ProgressListener = (percent: number) => void;
+
+const progressListeners = new Map<string, Set<ProgressListener>>();
+
+function notifyProgress(token: string, percent: number) {
+  const listeners = progressListeners.get(token);
+  if (!listeners) return;
+  for (const listener of listeners) listener(percent);
+}
+
+let uploadTokenSeq = 0;
+
+export function newUploadToken(): string {
+  uploadTokenSeq += 1;
+  return `upload-${uploadTokenSeq}`;
+}
+
+export function onUploadProgress(token: string, listener: ProgressListener): void {
+  const listeners = progressListeners.get(token) ?? new Set<ProgressListener>();
+  listeners.add(listener);
+  progressListeners.set(token, listeners);
+}
+
+export function offUploadProgress(token: string, listener: ProgressListener): void {
+  const listeners = progressListeners.get(token);
+  if (!listeners) return;
+  listeners.delete(listener);
+  // 最后一个订阅者走了就把这条记录删掉：留着就是内存泄漏（每次上传一个键）
+  if (listeners.size === 0) progressListeners.delete(token);
+}
+
+/** 用 XHR 发一次 multipart 上传，并沿途上报进度。
+ *
+ * 为什么不复用 `request()`：那条路上的 401 → 续期 → 重放是围绕 `fetch` 写的，
+ * 而这里**必须**用 XHR。两套各管一段，边界写在这里：本函数只负责
+ * "把字节发出去 + 报进度 + 把响应/错误转成统一形状"，**不含续期**。
+ * 上传接口要求登录，令牌过期时会拿到 401 —— 这是可接受的：
+ * 用户重试一次即可（相比"为上传单独实现一套续期"，这个取舍更简单也更不容易错）。
+ */
+function uploadWithProgress(
+  path: string,
+  body: FormData,
+  token: string,
+): Promise<Attachment> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE}${path}`);
+    xhr.withCredentials = true; // 同源也会带 Cookie，写出来是为了 M10 前后端分源
+    // ⚠️ **绝对不要 `setRequestHeader("Content-Type", …)`**：multipart 的
+    // Content-Type 里必须带 boundary，浏览器自己会填。手写（哪怕写空串）
+    // 都会让后端解析失败 → 422 "file: Field required"。实测踩过，与 `send()` 里那条同源。
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      // 到 100% 只是"字节发出去了"，响应还没回来 —— 界面上的措辞要区分这两段，
+      // 所以这里报的是**上传**进度，收尾由调用方的 pending 状态表达。
+      notifyProgress(token, Math.round((event.loaded / event.total) * 100));
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as Attachment);
+        } catch {
+          reject(new ApiError("上传成功但响应无法解析", xhr.status));
+        }
+        return;
+      }
+      const body = (() => {
+        try {
+          return JSON.parse(xhr.responseText) as ApiErrorBody;
+        } catch {
+          return {} as ApiErrorBody;
+        }
+      })();
+      reject(
+        new ApiError(
+          body.error?.message ?? `上传失败：${xhr.status}`,
+          xhr.status,
+          body.error?.code,
+          body.error?.request_id,
+        ),
+      );
+    });
+
+    xhr.addEventListener("error", () =>
+      reject(new ApiError("上传失败：网络中断（后端可能没启动）", 0)),
+    );
+    xhr.addEventListener("abort", () => reject(new ApiError("上传已取消", 0)));
+
+    xhr.send(body);
+  });
 }
 
 // ------------------------------------------------------------------ 类型
@@ -249,14 +367,29 @@ export type BudgetBoardRow = Budget & {
   category_name: string;
 };
 
-/** 采购申请状态（M5 只用到这四个；后九个状态随 M6–M9 加）。 */
+/** 采购申请状态（M5 四个，M6 加两个，M10 履约链六个 —— 到这里状态机闭环）。
+ *
+ * 每加一个状态都要同步 `components/ui.tsx` 的徽章与 `RequestTimeline.tsx` 的
+ * 时间线文案 —— 三处不一致时，同一个状态会显示成两个词。
+ *
+ * 加类型不等于加了界面：8.2–8.4 只做了后端，
+ * 前端还没有"下单 / 收货 / 收票 / 付款 / 归档"的页面（那是 M10 前端的事）。
+ * 但类型必须跟上 —— 后端已经在返回这些状态了，
+ * 类型里没有它，将来写页面时 `switch` 会漏掉它们，而 TS 不会提醒。
+ */
 export type RequestStatus =
   | "DRAFT"
   | "IN_APPROVAL"
   | "DISCARDED"
   | "WITHDRAWN"
   | "SOURCING"
-  | "REJECTED";
+  | "REJECTED"
+  | "AWARDED"
+  | "ORDERED"
+  | "RECEIVED"
+  | "INVOICED"
+  | "PAID"
+  | "CLOSED";
 
 export type RequestUrgency = "NORMAL" | "URGENT";
 
@@ -633,24 +766,47 @@ export const api = {
   listAttachments: (requestId: string) =>
     request<Attachment[]>(`/api/v1/requests/${requestId}/attachments`),
 
-  /** 上传附件。
+  /** 上传附件（走 XHR，带进度上报）。
    *
-   * ============================ 两个必须这样做的地方 ============================
+   * ============================ 三个必须这样做的地方 ============================
    * 1. **不要自己写 `Content-Type`**：multipart 的 `Content-Type` 里要带 boundary，
-   *    而 boundary 是浏览器生成随机串时才知道的。`send()` 已经会为 `FormData`
-   *    把默认的 `Content-Type: application/json` 删掉，所以这里**什么都不用传** ——
-   *    传 `""` 是错的（浏览器会真的发一个空头，后端解析失败报 422 "file: Field required"）。
+   *    而 boundary 是浏览器生成随机串时才知道的。`send()` 会为 `FormData`
+   *    把默认的 `Content-Type: application/json` 删掉，XHR 那条路则是压根不设 ——
+   *    传 `""` 是错的（浏览器会真的发一个空头，后端报 422 "file: Field required"）。
    * 2. **`File` 原样交给 FormData**：`filename` 由浏览器填，中文名会被正确编码。
+   * 3. **走 XHR 而不是 `fetch`**：`fetch` 没有上传进度，进度条就无从谈起。
+   *    见 `uploadWithProgress` 的说明。
+   *
+   * `progressToken` 可选：给了就沿途向 `onUploadProgress` 的订阅者报百分比。
    */
-  uploadAttachment: (requestId: string, file: File, kind: AttachmentKind) => {
+  uploadAttachment: (
+    requestId: string,
+    file: File,
+    kind: AttachmentKind,
+    progressToken?: string,
+  ) => {
     const body = new FormData();
     body.append("file", file);
     body.append("kind", kind);
+    if (progressToken) {
+      return uploadWithProgress(
+        `/api/v1/requests/${requestId}/attachments`,
+        body,
+        progressToken,
+      );
+    }
     return request<Attachment>(`/api/v1/requests/${requestId}/attachments`, {
       method: "POST",
       body,
     });
   },
+
+  /** 删除附件（**软删除**：后端留审计痕迹，磁盘文件不删）。
+   *
+   * 204 返回空体 —— `request()` 已经处理了这种情况（返回 undefined）。
+   */
+  deleteAttachment: (attachmentId: string) =>
+    request<void>(`/api/v1/attachments/${attachmentId}`, { method: "DELETE" }),
 
   /** 下载附件并触发浏览器保存。
    *

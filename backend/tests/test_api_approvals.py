@@ -1050,9 +1050,42 @@ async def test_policy_change_changes_chain_and_history_keeps_snapshot(
 async def test_todo_list_is_one_query(world: World) -> None:
     """验收 8：待办列表**一次 JOIN 查完**，不是"查 20 条任务再逐条查申请"。
 
-    做法很直接：造 3 条待办，数该请求期间执行的 SELECT 条数。
-    如果每条任务都去补查申请与品类，就是 1 + 3×2 = 7 条以上。
+    ============================ 怎么证"没有 N+1" ============================
+    不写死一个魔法数字，而是**比较两次请求**：
+
+        3 条待办时的 SELECT 条数  ==  6 条待办时的 SELECT 条数
+
+    真出现 N+1 的话（每条任务补查申请与品类），第二次会比第一次多 6 条以上。
+    固定条数只有一种来源：鉴权（查账号 / 角色）与**部门树**（部门级角色算可见范围），
+    这些与待办条数无关 —— 所以"条数不随行数增长"就是最直接的证据。
+
+    2026-10-04 补部门范围后这里多了 **1 条** `SELECT departments`：
+    部门级角色要连子部门一起算（与申请列表同一条判据、同一份代价）。
+    它是**常量**开销，不是按行增长的 —— 这正是下面用一个"两轮相等"来断言的原因。
     """
+    import logging
+
+    logger = logging.getLogger("sqlalchemy.engine")
+    previous_level = logger.level
+
+    async def count_selects() -> int:
+        records: list[str] = []
+
+        class _Counter(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if "SELECT" in record.getMessage().upper():
+                    records.append(record.getMessage())
+
+        handler = _Counter()
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        try:
+            await _todo(world.manager)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+        return len(records)
+
     submitted_ids: list[str] = []
     for index in range(3):
         submitted = await _submit(
@@ -1061,35 +1094,27 @@ async def test_todo_list_is_one_query(world: World) -> None:
         world.requests.append(uuid.UUID(submitted["id"]))
         submitted_ids.append(submitted["id"])
 
-    import logging
+    with_three = await count_selects()
 
-    logger = logging.getLogger("sqlalchemy.engine")
-    records: list[str] = []
+    # 再加 3 条：行数翻倍，查询条数**不许**跟着涨
+    for index in range(3, 6):
+        submitted = await _submit(
+            world.requester, world.category["id"], f"待办 {index}", 50_000
+        )
+        world.requests.append(uuid.UUID(submitted["id"]))
+        submitted_ids.append(submitted["id"])
 
-    class _Counter(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            message = record.getMessage()
-            if "SELECT" in message.upper():
-                records.append(message)
-
-    handler = _Counter()
-    logger.addHandler(handler)
-    previous_level = logger.level
-    logger.setLevel(logging.INFO)
-    try:
-        todo = await _todo(world.manager)
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous_level)
-
-    # 只数**本次造的**那几条：开发库里可能还有别的待办（手工建的、实测留的），
-    # 断言 `total` 会让这条用例依赖"库是空的"。
+    # 先确认这 6 条真的都在他的待办里（否则下面比的是"两次都查不到东西"）
+    todo = await _todo(world.manager)
     mine = [item for item in todo["items"] if item["request"]["id"] in submitted_ids]
-    assert len(mine) == len(submitted_ids)
-    # 一次 count + 一次数据查询 = 2；留一点余量给会话层的杂项查询
-    assert len(records) <= 4, f"待办查询条数过多（疑似 N+1）：{len(records)}\n" + "\n".join(
-        records[:8]
+    assert len(mine) == len(submitted_ids), "6 条自有申请都该出现在待办里"
+
+    with_six = await count_selects()
+    assert with_six == with_three, (
+        f"查询条数随行数增长了（疑似 N+1）：3 条时 {with_three} 条，6 条时 {with_six} 条"
     )
+    # 常量上限：鉴权 3（账号 / 角色 / 部门树）+ 待办 2（count + 数据）= 5
+    assert with_six <= 6, f"待办查询条数过多：{with_six} 条"
 
 
 # ================================================================ 15. 策略校验
@@ -1135,3 +1160,142 @@ async def test_policy_with_unreachable_step_is_rejected(world: World) -> None:
     )
     assert response.status_code == 422
     assert "order=60" in response.json()["error"]["message"]
+
+
+# ------------------------------------------------------------------ 部门范围（2026-10-04 补）
+
+
+async def _other_department_approver(
+    world: World, roles: list[str]
+) -> tuple[AsyncClient, str]:
+    """造一个**另一个部门**的审批人，返回 `(client, 部门 id)`。
+
+    为什么要另起一个部门：`DEPT_MANAGER` / `DEPT_HEAD` 是**部门级角色** ——
+    建链时引擎把它们解析成"该部门及其子部门里的人"（`_department_scope`），
+    但**办的时候**如果只校验"你有没有这个角色"，同一角色名就会跨部门通行。
+    这个辅助函数就是为了把那个前提造出来。
+    """
+    other = (
+        await world.admin_client.post(
+            "/api/v1/admin/departments",
+            json={"name": "另一个部门", "code": _code("TDEP")},
+        )
+    ).json()
+    world.departments.append(uuid.UUID(other["id"]))
+    client, _ = await world.make(roles, uuid.UUID(other["id"]))
+    return client, other["id"]
+
+
+async def test_todo_is_scoped_to_the_actors_department(world: World) -> None:
+    """**别的部门的负责人，看不到本部门单子的待办。**
+
+    ============================ 这条断言守的是什么 ============================
+    `DEPT_MANAGER` 是部门级角色：行政部门的主管不该看到（更不该批掉）
+    采购部那一级"部门主管"的任务。而任务表里只有 `role = 'DEPT_MANAGER'`
+    这一个字段 —— **它不携带部门**，所以部门范围必须由**申请所属部门**推出来。
+
+    这条以前是绿的，只因为开发库里恰好没有别的部门停在同一级；
+    一旦有（浏览器实测留下的单子就会），同一个角色名就跨部门看到了。
+
+    ⚠️ 两个 `DEPT_HEAD` 都要**先造好再提交**：建链时就会检查每一级有没有可用审批人
+    （缺人 422 `NO_APPROVER_FOR_STEP`），提交后再补账号来不及。
+    """
+    other_head, _ = await _other_department_approver(world, ["DEPT_HEAD"])
+    mine = await world.make(["DEPT_HEAD"], uuid.UUID(world.department["id"]))
+
+    # 本部门的单子：提交后停在第 10 级（DEPT_MANAGER）
+    submitted = await _submit(world.requester, world.category["id"], "部门范围", 500_000)
+    world.requests.append(uuid.UUID(submitted["id"]))
+
+    # 同部门主管看得到
+    assert len(await _todo_for(world.manager, submitted["id"])) == 1
+
+    # 本用例的自有单子批掉第 1 级，推到第 20 级（DEPT_HEAD）
+    manager_task = (await _todo_for(world.manager, submitted["id"]))[0]["task"]
+    moved = await world.manager.post(
+        f"/api/v1/approvals/tasks/{manager_task['id']}/approve",
+        json={"version": manager_task["version"]},
+    )
+    assert moved.status_code == 200, moved.text
+
+    # 现在轮到 DEPT_HEAD
+    todo = await _todo_for(mine[0], submitted["id"])
+    assert len(todo) == 1, "本部门负责人必须看得到"
+
+    other_todo = await _todo_for(other_head, submitted["id"])
+    assert other_todo == [], (
+        "别的部门的负责人不该看到本部门的待办 —— "
+        f"实得 {len(other_todo)} 条（角色匹配但部门不对）"
+    )
+
+
+async def test_approving_across_departments_is_forbidden(world: World) -> None:
+    """**换个 id 直接批别人的部门** → 403（不是 200、也不是 404）。
+
+    待办列表过滤只挡住"列表里看不到"；真正的边界必须在**决定**那一步。
+    这条与"换 id 取别人的申请 → 404"是同一类验收：
+      - 申请：id 可猜 → 404（不告诉它存在）
+      - 审批任务：任务确实存在、actor 也确实持有该角色 → **403**（可见但无权）
+    """
+    other_head, _ = await _other_department_approver(world, ["DEPT_HEAD"])
+    # 本部门也要有 DEPT_HEAD，否则建链时就 422（缺审批人）
+    await world.make(["DEPT_HEAD"], uuid.UUID(world.department["id"]))
+
+    submitted = await _submit(world.requester, world.category["id"], "跨部门批", 500_000)
+    world.requests.append(uuid.UUID(submitted["id"]))
+
+    manager_task = (await _todo_for(world.manager, submitted["id"]))[0]["task"]
+    await world.manager.post(
+        f"/api/v1/approvals/tasks/{manager_task['id']}/approve",
+        json={"version": manager_task["version"]},
+    )
+
+    head_task = next(
+        task for task in await _tasks_of(submitted["id"]) if task.role == "DEPT_HEAD"
+    )
+    denied = await other_head.post(
+        f"/api/v1/approvals/tasks/{head_task.id}/approve",
+        json={"version": head_task.version},
+    )
+    assert denied.status_code == 403, denied.text
+
+    # 而且**不能**留下痕迹：任务仍是 PENDING、单子仍在第 20 级
+    unchanged = next(task for task in await _tasks_of(submitted["id"]) if task.id == head_task.id)
+    assert unchanged.status == PENDING
+    assert (await _flow_of(submitted["id"])).current_step_order == 20
+
+
+async def test_the_right_department_head_can_still_approve(world: World) -> None:
+    """**反向保险**：加了部门范围之后，本部门的人不能被误伤。
+
+    只加"不许"很容易顺手把所有部门级审批都挡死（把 `department_scope` 写错方向、
+    或拿 `visibility is ALL` 当唯一放行条件）。这条钉住"该通的路仍然通"。
+
+    金额用 50 万元：`FULL_POLICY` 里第 2 级（`DEPT_HEAD`）的门槛是 10 万元，
+    低于它只会有一条 `DEPT_MANAGER` 任务，走不到第 20 级（实测踩过）。
+
+    ⚠️ **审批人要先用 `world.make` 造出来，再提交**：建链时就会检查每一级在本部门
+    有没有可用审批人，缺人直接 422 `NO_APPROVER_FOR_STEP`（"审批链不许为空"那条约束）
+    —— 提交后再补账号是来不及的。
+    """
+    head, _ = await world.make(["DEPT_HEAD"], uuid.UUID(world.department["id"]))
+
+    submitted = await _submit(world.requester, world.category["id"], "本部门照批", 500_000)
+    world.requests.append(uuid.UUID(submitted["id"]))
+
+    manager_task = (await _todo_for(world.manager, submitted["id"]))[0]["task"]
+    first = await world.manager.post(
+        f"/api/v1/approvals/tasks/{manager_task['id']}/approve",
+        json={"version": manager_task["version"]},
+    )
+    assert first.status_code == 200, first.text
+
+    head_todo = await _todo_for(head, submitted["id"])
+    assert len(head_todo) == 1, "本部门负责人必须看得到第 2 级"
+    head_task = head_todo[0]["task"]
+    second = await head.post(
+        f"/api/v1/approvals/tasks/{head_task['id']}/approve",
+        json={"version": head_task["version"]},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["request_status"] == RequestStatus.SOURCING.value

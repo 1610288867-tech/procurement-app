@@ -288,8 +288,9 @@ async function main() {
       aside: await page.evaluate(visibleExpr("aside")),
       crumb: await page.evaluate(visibleExpr("main [aria-label=\"面包屑\"]")),
       nav: await page.evaluate(visibleExpr("[data-testid=app-nav]")),
-      navLinkCount: await page.evaluate(
-        "document.querySelectorAll('[data-testid=app-nav] a').length",
+      navLinks: await page.evaluate(
+        "[].slice.call(document.querySelectorAll('[data-testid=app-nav] a'))"
+          + ".map(function(a){return a.textContent.trim()}).join('/')",
       ),
     };
     const shellOverflow = await page.evaluate(overflowProbe);
@@ -307,10 +308,18 @@ async function main() {
         && Math.abs(shellNarrow.aside.width - NARROW.width) <= 4,
       JSON.stringify(shellNarrow.aside),
     );
+    // 断言的是**恰好这几项**，不是"数量等于 N"：数量对不上时报错信息里
+    // 能直接看出多了或少了哪一项（B1 那条自检就是这么写的，两边保持同一种写法）。
+    //
+    // 部门主管（dept-manager）在 M11 之后是这 5 项：
+    //   环境自检 / 我的申请 / 我的待办 / 合格供应商 / 制度助手
+    // 而**没有**「履约工作台」与「预算看板」——
+    // 他没有 PROCUREMENT/RECEIVER/FINANCE 中的任何一个，也不是 FINANCE/ADMIN。
+    // 这条断言因此在守两件事：菜单项齐全，以及"不该给的没给"。
     check(
       "B4 窄屏下菜单链接着色齐全（折叠不等于丢功能）",
-      shellNarrow.navLinkCount === 4,
-      "链接数=" + shellNarrow.navLinkCount + "（部门主管应为 环境自检/我的申请/我的待办/合格供应商）",
+      shellNarrow.navLinks === "环境自检/我的申请/我的待办/合格供应商/制度助手",
+      "菜单=" + shellNarrow.navLinks,
     );
     check(
       "B5 窄屏下页内面包屑可见（顶栏面包屑被 md:hidden 藏掉，不能两处都藏）",
@@ -410,7 +419,15 @@ async function main() {
 
     const passed = results.filter(Boolean).length;
     console.log("\n" + passed + "/" + results.length + " 项通过");
-    return passed === results.length ? 0 : 1;
+    // ⚠️ **必须显式退出**，否则进程不结束（实测：跑完 20/20 之后一直挂着，
+    // 每一轮都留一个 node 进程）。
+    // 原因有两处，都不是"忘了关"那么简单：
+    //   ① 与 CDP 的 WebSocket 是**我们自己 new 的**，`conn.close()` 只关它、
+    //      但这个 `ws` 对象没有 unref，事件循环会一直等它；
+    //   ② `browser.kill()` 没有 await，而且它返回的句柄也是活的。
+    // 结论已经打印完了，这里强制退出不会掩盖任何东西 ——
+    // 退出码由 `passed === results.length` 决定，与"是否还有句柄活着"无关。
+    process.exit(passed === results.length ? 0 : 1);
   } finally {
     browser.kill();
     try {

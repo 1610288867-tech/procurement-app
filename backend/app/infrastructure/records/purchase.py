@@ -39,16 +39,23 @@ from sqlalchemy.sql import quoted_name
 from app.domain.enums import RequestStatus
 from app.infrastructure.records.base import Base
 
-# M5 只有这四个状态。M6/M7 加 SOURCING / REJECTED 时，
-# 迁移里要一起把这个 CHECK 换掉 —— 所以它是常量，不是散在 SQL 里的字面量。
-# M6 加 SOURCING / REJECTED 时，这个元组与迁移里的 CHECK 一起改（同一次改动）。
+# 主单状态的白名单。**每加一个状态，这里与迁移里的 CHECK 必须一起改**
+# （同一次改动，否则写入新状态会撞 CHECK —— M10 加 AWARDED 时实测撞到过，
+#  报出来的是 503 "数据库暂不可用"，指错方向）。
+# 所以它是常量，不是散在 SQL 里的字面量。
 KNOWN_REQUEST_STATUSES = (
     RequestStatus.DRAFT.value,
     RequestStatus.IN_APPROVAL.value,
     RequestStatus.DISCARDED.value,
     RequestStatus.WITHDRAWN.value,
-    RequestStatus.SOURCING.value,
-    RequestStatus.REJECTED.value,
+    RequestStatus.SOURCING.value,  # M6
+    RequestStatus.REJECTED.value,  # M6
+    RequestStatus.AWARDED.value,  # M10 / 8.1
+    RequestStatus.ORDERED.value,  # M10 / 8.2
+    RequestStatus.RECEIVED.value,  # M10 / 8.2
+    RequestStatus.INVOICED.value,  # M10 / 8.3
+    RequestStatus.PAID.value,  # M10 / 8.4
+    RequestStatus.CLOSED.value,  # M10 / 8.4
 )
 
 

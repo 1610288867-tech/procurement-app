@@ -58,6 +58,11 @@ const ICONS: Record<string, string> = {
   tag: "M4 12 12 4h7v7l-8 8-7-7Zm10-4h.01",
   shield: "M12 4l7 3v5c0 4-3 7-7 8-4-1-7-4-7-8V7l7-3Z",
   wallet: "M4 8h13a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a1 1 0 0 1-1-1V8Zm0 0V6a1 1 0 0 1 1-1h11M15 13h.01",
+  // M10 履约工作台。**不复用 `inbox`**：那一个已经是「我的待办」的图标，
+  // 两个菜单项长一样时用户会靠读数第二遍来区分——图标就白放了。
+  box: "M4 8l8-4 8 4v8l-8 4-8-4V8Zm0 0 8 4 8-4M12 12v8",
+  // M11 制度助手：一本翻开的书（"查制度"最直白的形状）
+  book: "M5 5a2 2 0 0 1 2-2h5v16H7a2 2 0 0 1-2-2V5Zm7-2h5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5",
 };
 
 function Icon({ name }: { name: keyof typeof ICONS | string }) {
@@ -122,6 +127,15 @@ function Sidebar() {
     me.isSuccess &&
     Boolean(me.data?.roles.some((role) => role === "FINANCE" || role === "ADMIN"));
 
+  // 「履约工作台」（M10）：三个履约角色之一可见。
+  // ⚠️ 这条判断与 `router.tsx` 里那条路由守卫的**角色列表必须同源** ——
+  // 两处不一致的表现是"菜单上有、点进去说无权限"（或反过来）。
+  // 所以两边都写同一组字面量，改的时候一起改。
+  const FULFILLMENT_ROLES = ["PROCUREMENT", "RECEIVER", "FINANCE"] as const;
+  const canFulfill =
+    me.isSuccess &&
+    Boolean(me.data?.roles.some((role) => FULFILLMENT_ROLES.includes(role as never)));
+
   return (
     <aside className="flex w-full shrink-0 flex-col gap-5 border-line bg-section p-4 md:sticky md:top-0 md:h-screen md:w-64 md:border-r md:p-5">
       <Link to="/" className="flex items-center gap-3">
@@ -158,6 +172,19 @@ function Sidebar() {
             <NavItem to="/suppliers" icon="truck">
               合格供应商
             </NavItem>
+            {/* M11：制度问答。**不限角色** —— 制度是给所有人看的，
+                放的位置也说明这一点：它在"我的"系列之后、"工作台"之前。 */}
+            <NavItem to="/chat" icon="book">
+              制度助手
+            </NavItem>
+            {/* 「履约工作台」只对三个履约角色显示。判据与路由守卫同源（见上）。
+                放在供应商之后、预算看板之前：它是"每天要做的事"，
+                比只读的看板更靠前。 */}
+            {canFulfill && (
+              <NavItem to="/fulfillment" icon="box">
+                履约工作台
+              </NavItem>
+            )}
             {canSeeBudgets && (
               <NavItem to="/budgets" icon="chart">
                 预算看板
@@ -176,6 +203,11 @@ function Sidebar() {
             </NavItem>
             <NavItem to="/admin/budgets" icon="wallet">
               预算
+            </NavItem>
+            {/* M11：知识库是"制度依据"的入口 —— 改它等于改所有回答的依据，
+                所以只在管理员组里出现（与 `/admin/*` 其余项同一口径）。 */}
+            <NavItem to="/admin/knowledge" icon="book">
+              知识库
             </NavItem>
           </>
         )}
@@ -232,9 +264,12 @@ const PAGE_LABELS: { match: RegExp; label: string; parent?: { label: string; to:
   { match: /^\/approvals\/tasks$/, label: "我的待办" },
   { match: /^\/suppliers$/, label: "合格供应商" },
   { match: /^\/budgets$/, label: "预算看板" },
+  // M11：制度问答。**不限角色**（制度是给所有人看的），所以父级是「首页」。
+  { match: /^\/chat$/, label: "制度助手" },
   { match: /^\/admin\/categories$/, label: "采购品类", parent: { label: "管理员", to: "/" } },
   { match: /^\/admin\/suppliers$/, label: "供应商管理", parent: { label: "管理员", to: "/" } },
   { match: /^\/admin\/budgets$/, label: "预算", parent: { label: "管理员", to: "/" } },
+  { match: /^\/admin\/knowledge$/, label: "知识库", parent: { label: "管理员", to: "/" } },
 ];
 
 function TopBar() {

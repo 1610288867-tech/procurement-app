@@ -38,12 +38,22 @@ async function connect(url = "about:blank") {
   });
   let nextId = 1;
   const pending = new Map();
+  //: 事件订阅（CDP 的 `method` 消息）。M9 的删除用例要接 `Page.javascriptDialogOpening`
+  //: ——原生 `confirm()` 会**挡住页面**，必须一边记下它弹出过、一边用
+  //: `Page.handleJavaScriptDialog` 接受它，否则脚本就停在那儿了。
+  const listeners = new Map();
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
-    if (!message.id || !pending.has(message.id)) return;
-    const entry = pending.get(message.id);
-    pending.delete(message.id);
-    message.error ? entry.reject(new Error(message.error.message)) : entry.resolve(message.result);
+    if (message.id && pending.has(message.id)) {
+      const entry = pending.get(message.id);
+      pending.delete(message.id);
+      message.error ? entry.reject(new Error(message.error.message)) : entry.resolve(message.result);
+      return;
+    }
+    // 没有 id 的才是事件（两者互斥，不写成 if/else 是为了让上面那条早退更显眼）
+    if (message.method && listeners.has(message.method)) {
+      for (const listener of listeners.get(message.method)) listener(message.params);
+    }
   });
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
@@ -51,9 +61,14 @@ async function connect(url = "about:blank") {
       pending.set(id, { resolve, reject });
       socket.send(JSON.stringify({ id, method, params }));
     });
+  const on = (method, listener) => {
+    const bucket = listeners.get(method) ?? new Set();
+    bucket.add(listener);
+    listeners.set(method, bucket);
+  };
   await send("Page.enable");
   await send("Runtime.enable");
-  return { send, close: () => socket.close() };
+  return { send, on, close: () => socket.close() };
 }
 
 const results = [];
@@ -90,7 +105,16 @@ async function main() {
       if (await evaluate(condition)) return true;
       await sleep(200);
     }
-    throw new Error(`等待超时：${label}`);
+    // ⚠️ 超时的时候**把现场带上**：只报"等待超时：某个标签"会让人去猜
+    // （实测为了定位一处失败反复重跑了四轮）。URL + 页面前 200 字 + 页面上
+    // 有哪些按钮，这三样一次就能说清"到底停在哪一页、那页上有什么"。
+    const where = await evaluate(`(() => {
+      const buttons = [].slice.call(document.querySelectorAll('button'))
+        .map((b) => b.textContent.trim()).filter(Boolean).slice(0, 8).join('|');
+      return location.pathname + ' :: ' + document.body.innerText.replace(/\\s+/g, ' ').slice(0, 200)
+        + ' :: buttons=' + buttons;
+    })()`);
+    throw new Error(`等待超时：${label}\n      现场：${where}`);
   };
 
   const shot = async (name) => {
@@ -613,6 +637,533 @@ async function main() {
 
     const attachmentShot = await shot("06-attachments");
     check(true, "附件与事件时间线已截图", attachmentShot);
+
+    // ---------- M9 补充：上传进度条 + 删除附件 ----------
+
+    // ① 进度条：本机上传 43 字节是**瞬间**完成的，正常情况根本看不到进度条。
+    //    所以先用 CDP 把上传方向限速（100 KB/s），再传一个几百 KB 的文件 ——
+    //    这样才观察得到"百分比在动"。（限速只影响这次实测，跑完恢复。）
+    await page.send("Network.enable");
+    await page.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 20,
+      downloadThroughput: -1,
+      uploadThroughput: 100 * 1024, // 100 KB/s
+    });
+    const progressSeen = await evaluate(`(async () => {
+      const input = document.querySelector('[data-testid=attachment-file-input]');
+      if (!input) return { error: 'no-input' };
+      // 约 400 KB 的合法 PDF（%PDF 头 + 填充），限速下大约要 4 秒
+      const head = new TextEncoder().encode('%PDF-1.7\\n');
+      const filler = new Uint8Array(400 * 1024).fill(0x20);
+      const file = new File([head, filler], '大文件进度条.pdf', { type: 'application/pdf' });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+
+      // 边传边采样：既确认进度条**出现过**，也确认百分比**真的在增长**
+      const samples = [];
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        const bar = document.querySelector('[data-testid=attachment-progress]');
+        if (bar) {
+          const now = Number(bar.querySelector('[role=progressbar]').getAttribute('aria-valuenow'));
+          samples.push(now);
+          if (now >= 100) break;
+        } else if (samples.length) {
+          break; // 进度条消失 = 传完了
+        }
+      }
+      return { samples };
+    })()`);
+    await page.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    });
+    const grew = progressSeen.samples && progressSeen.samples.length >= 2 &&
+      progressSeen.samples.some((value) => value > 0 && value < 100);
+    check(
+      grew,
+      "限速上传 400 KB → 进度条出现且百分比在增长（fetch 做不到，故走 XHR）",
+      `采样=${JSON.stringify((progressSeen.samples || []).slice(0, 8))}`,
+    );
+
+    await waitFor(
+      `(() => { const el = document.querySelector('[data-testid=attachment-list]');
+        return !!el && el.innerText.indexOf('大文件进度条.pdf') >= 0; })()`,
+      "限速上传最终完成",
+      30000,
+    );
+
+    // ② 删除：先确认二次确认框会出现（它是**拦住误触**的那一步），再确认删除后列表与时间线都变
+    const beforeDelete = await evaluate(`(async () => {
+      const events = await (await fetch('/api/v1/requests/${flowed.id}/timeline')).json();
+      return { events: events.events.length };
+    })()`);
+
+    // 点"删除"会弹原生 confirm，**会挡住后续脚本** —— 所以一边自动接受，
+    // 一边把它弹出的消息记下来（这是"有二次确认"的证据，而不是靠读代码声称）。
+    let dialogMessage = null;
+    page.on("Page.javascriptDialogOpening", (params) => {
+      dialogMessage = params.message;
+      void page.send("Page.handleJavaScriptDialog", { accept: true });
+    });
+
+    const clickedDelete = await evaluate(`(() => {
+      const rows = [].slice.call(document.querySelectorAll('[data-testid=attachment-list] li'));
+      const target = rows.find((li) => li.innerText.indexOf('页面实测报价单.pdf') >= 0);
+      if (!target) return 'no-row';
+      const button = [].slice.call(target.querySelectorAll('button'))
+        .find((b) => b.textContent.trim() === '删除');
+      if (!button) return 'no-button';
+      button.click();
+      return 'clicked';
+    })()`);
+    await sleep(1800);
+    const listedAfter = await evaluate(`(() => {
+      const el = document.querySelector('[data-testid=attachment-list]');
+      return el ? el.innerText.replace(/\\s+/g, ' ').trim() : '';
+    })()`);
+    check(
+      clickedDelete === "clicked" && dialogMessage !== null,
+      "点「删除」会先弹二次确认（防误触；没有撤销入口的操作不能只点一下就消失）",
+      clickedDelete === "clicked"
+        ? `对话框首行=「${String(dialogMessage).split("\n")[0].slice(0, 42)}」`
+        : `点击结果=${clickedDelete}`,
+    );
+    check(
+      !listedAfter.includes("页面实测报价单.pdf"),
+      "确认后附件从列表消失（软删除：服务端留痕，磁盘文件不删）",
+      `列表=「${listedAfter.slice(0, 70)}」`,
+    );
+
+    await page.send("Page.navigate", { url: `${APP}/requests/${flowed.id}` });
+    await waitFor("!!document.querySelector('[data-testid=request-timeline]')", "删除后重看时间线");
+    const afterDeleteTimeline = await evaluate(`[].slice
+      .call(document.querySelectorAll('[data-testid=request-timeline] li'))
+      .map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`);
+    check(
+      afterDeleteTimeline.some((text) => text.includes("删除附件")),
+      "删除在时间线上留痕（多一条「删除附件」，且上传那条事件仍在）",
+      `末条=「${(afterDeleteTimeline[afterDeleteTimeline.length - 1] ?? '').slice(0, 60)}」`,
+    );
+    check(
+      afterDeleteTimeline.length === beforeDelete.events + 1,
+      "时间线只多出「删除附件」这一条（beforeDelete 是在上传之后取的，所以只 +1）",
+      `${beforeDelete.events} → ${afterDeleteTimeline.length}`,
+    );
+
+    // 注意：**不在这里验"别人删不掉 → 403"**。种子里的 7 个演示账号中，
+    // 只有 DEPT_MANAGER / DEPT_HEAD 是"部门级可见"，而这两个都在行政部（ADM）——
+    // 也就是说页面实测的环境里根本造不出"看不到这张单子"的账号
+    // （PROCUREMENT / FINANCE / ADMIN 都是全公司可见，删得掉是**对的**）。
+    // 跨部门 403 由集成测试覆盖：`test_delete_by_an_outsider_is_403_and_the_attachment_survives`。
+
+    const deleteShot = await shot("07-attachment-deleted");
+    check(true, "删除后的附件与时间线已截图", deleteShot);
+  }
+
+  // ================================================================
+  // M10 全链路（履约工作台）：申请 → 审批 → 询价定标 → 下单收货 → 收票匹配 → 付款归档
+  // ================================================================
+  //
+  // ============================ 这一块为什么必须走页面 ============================
+  // M10 的后端有 23 条集成用例覆盖（含真并发），它们证明的是"规则对"。
+  // 而这里要证的是另一件事：**界面上真的点得通**，而且"谁能看到哪一步"没写错。
+  // 履约工作台是 M10 唯一的界面入口，它的可见性判断写在**三处**
+  // （菜单 / 路由守卫 / 首页快捷入口），三处不一致的表现是
+  // "菜单上有、点进去说无权限"——光读代码很难发现。
+  //
+  // ============================ 金额设计（让"差额释放"看得见） ============================
+  //   申请：1 × 900 元 = 90000 分   ← 提交时按申请金额预留
+  //   报价：300 元（成交单价）      ← 询价压价
+  //   订单：(1 × 300) = 30000 分    ← 订单金额是**成交单价 × 数量**
+  //   实付：30000 分                ← 匹配比的是订单金额
+  //   释放：90000 − 30000 = 60000 分 ← M7 那条"差额必须显式释放"
+  // 三个数字各不相同，任何一处取错（例如误用申请金额当匹配基准）都会当场露出来。
+  {
+    // 复用前面已经建好的页面实测品类与预算；那条预算额度 10 万分 = 1000 元，
+    // 够 900 元的申请（不够的话提交会被 422 拦下，也是有效发现）。
+    //
+    // ⚠️ **提交人必须是 `dept-head`，不能是 `dept-manager`**：
+    // 审批链第 10 级是 `DEPT_MANAGER`，而行政部里只有 `dept-manager` 一个人符合 ——
+    // 让部门主管提交就等于"他自己审自己"，后端会以
+    // `SELF_APPROVAL_NOT_ALLOWED` 422 拒绝（**这是对的**：项目禁自审，SoD）。
+    // 由部门负责人提交，第 10 级就落在部门主管身上，链是通的（实测踩过这个 422）。
+    // 记下预算的三个数当**基线**：本块的断言全是"相对它变了多少"，
+    // 因为这条预算会被多轮实测复用（绝对值每轮都不同）。
+    //
+    // ⚠️ 取基线要用**管理员**身份：`GET /api/v1/budgets` 只给 FINANCE / ADMIN，
+    // 部门负责人拿到的是一段错误体 —— 于是 `budgets.filter` 直接抛
+    // `TypeError: budgets.filter is not a function`（实测踩到，报错还很难懂）。
+    await loginAs("admin");
+    const booksBefore = await evaluate(`(async () => {
+      const response = await fetch('/api/v1/budgets');
+      if (!response.ok) return { error: 'HTTP ' + response.status };
+      const budgets = await response.json();
+      const budget = budgets.filter((b) => b.id === '${draftBudget.id}')[0];
+      return budget
+        ? { total: budget.amount_total_fen, reserved: budget.amount_reserved_fen, spent: budget.amount_spent_fen }
+        : { error: '基线里找不到这条预算' };
+    })()`);
+    if (booksBefore.error) throw new Error(`取预算基线失败：${booksBefore.error}`);
+
+    await loginAs("dept-head");
+    const chain = await evaluate(`(async () => {
+      const created = await fetch('/api/v1/requests', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category_id: '${draftCategory.id}', title: 'M10 页面实测-全链路' }),
+      });
+      const draft = await created.json();
+      if (!created.ok) return { error: '建草稿 HTTP ' + created.status };
+      const items = await fetch('/api/v1/requests/' + draft.id + '/items', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version: draft.version,
+          items: [{ name: '页面实测物资', spec: '整箱', quantity: 1, unit_price_fen: 90000 }],
+        }),
+      });
+      const withItems = await items.json();
+      if (!items.ok) return { error: '填明细 HTTP ' + items.status };
+      const submitted = await fetch('/api/v1/requests/' + draft.id + '/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'm10-page-submit-' + draft.id },
+        body: JSON.stringify({ version: withItems.version }),
+      });
+      if (!submitted.ok) {
+        return { error: '提交 HTTP ' + submitted.status + ' ' + JSON.stringify(await submitted.json()).slice(0, 160) };
+      }
+      return { id: draft.id };
+    })()`);
+    if (chain.error) throw new Error(`造 M10 全链路申请失败：${chain.error}`);
+    const chainId = chain.id;
+    check(true, "造一条 900 元的申请用于全链路实测（1 × 90000 分）", chainId.slice(0, 8));
+
+    /** 把值写进 React 受控输入，并**确认真的写进去了**。
+     *
+     * 三个必须这样做的地方：
+     *  1. 必须用原型上的 setter：直接 `input.value = x` 在 React 里是**静默无效**的
+     *     （它的 value tracker 认为值没变，onChange 不触发，提交的还是旧值）；
+     *  2. **返回写入后的实际值**，让调用处能断言 —— 上一版返回 `'ok'`，
+     *     于是"选择器没找到元素"被当成成功，一路跑到后面才以"匹配卡片没出现"爆出来，
+     *     而真因（表单压根没填上）看不出来（实测为此多跑了两轮）；
+     *  3. 选择器一律用 `data-testid`：面板上曾经有**两个** `placeholder='例如 1200.00'`
+     *     （报价金额、发票金额），按 placeholder 找等于抽签。
+     */
+    const setReactValue = (selector, value) => `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { ok: false, reason: 'no-element:' + ${JSON.stringify(selector)} };
+      const proto = el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(el, ${JSON.stringify(String(value))});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return { ok: el.value === ${JSON.stringify(String(value))}, readback: el.value };
+    })()`;
+
+    /** 填一个字段；填不进去就**当场失败**（不把问题推到后面才爆）。 */
+    const fillField = async (selector, value) => {
+      const result = await evaluate(setReactValue(selector, value));
+      if (!result || result.ok !== true) {
+        throw new Error(`填字段失败 ${selector}：${JSON.stringify(result)}`);
+      }
+      return result.readback;
+    };
+
+    /** 在工作台的某个卡片（或链接）里找元素并点它。
+     *
+     * 这里派发的是**冒泡的 MouseEvent**（而不是 `el.click()`），但不是因为
+     * `.click()` 不冒泡 —— DOM 规范里它是冒泡的，React 收得到。
+     * 真正的原因是**可读性**：派发 MouseEvent 时"点的是什么、带不带冒泡"
+     * 都写在调用处，而 `.click()` 需要读的人自己去回忆规范细节。
+     * 另外这里接受 `a` 与 `button` 两种元素：待办列表里是链接、表单里是按钮，
+     * 分两个辅助函数只多一处会漂的地方。
+     */
+    const clickButton = (text) => `(() => {
+      const el = [].slice.call(document.querySelectorAll('button, a'))
+        .filter((node) => node.textContent.trim().indexOf(${JSON.stringify(text)}) >= 0)[0];
+      if (!el) {
+        const seen = [].slice.call(document.querySelectorAll('button'))
+          .map((b) => b.textContent.trim());
+        return 'no-button:' + seen.join('|').slice(0, 120);
+      }
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return 'clicked';
+    })()`;
+
+    /** 轮询这张申请的主单状态，直到它等于 `want`（或超时返回实际值）。
+     *
+     * **为什么用状态而不是等页面文字**：这一块里有三步（审批、付款、归档）成功之后
+     * 组件会 `navigate` 离开当前页，等的那个词只会出现一瞬间。而"主单到了哪个状态"
+     * 既不会骗人、又是验收真正要的结论。
+     */
+    const pollStatus = async (requestId, want, timeout = 20000) => {
+      const deadline = Date.now() + timeout;
+      let last = "";
+      while (Date.now() < deadline) {
+        last = await evaluate(
+          `(async () => { const r = await fetch('/api/v1/requests/${requestId}');
+             if (!r.ok) return 'HTTP ' + r.status;
+             return (await r.json()).request.status; })()`,
+        );
+        if (last === want) return last;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return last;
+    };
+
+    // ---------- 第 1 步：部门主管审批通过（页面上点「通过」） ----------
+    // 提交人是部门负责人，第 10 级（`DEPT_MANAGER`）就轮到部门主管 —— 不是自审。
+    await loginAs("dept-manager");
+    // ⚠️ **先用接口定位"待办里的哪一条是这张单子"，再直接导航过去**。
+    // 原先是"进待办页 → 找标题链接 → 点它"，实测在这个环境里不稳：
+    // 点完 URL 没变、页面停在空列表上，而证据里只看到 `no-button:退出`
+    // （四个轮次才定位到，代价太大）。
+    // 这一段的**被测对象是履约工作台**，不是"待办页的链接能不能点"——
+    // 后者已经由既有 M6 用例覆盖了，没必要在这里再赌一次渲染时序。
+    const todoTask = await evaluate(`(async () => {
+      const page = await (await fetch('/api/v1/approvals/tasks?limit=50')).json();
+      const hit = (page.items || []).filter(
+        (item) => item.request && item.request.id === '${chainId}',
+      )[0];
+      return hit ? { taskId: hit.task.id, mode: hit.task.mode } : null;
+    })()`);
+    if (!todoTask) throw new Error("部门主管的待办里没有这张单子 —— 审批链没落到他身上");
+    await page.send("Page.navigate", { url: `${APP}/approvals/tasks/${todoTask.taskId}` });
+    // 等**批准按钮**（而不是等某段文字）：按钮在就说明这一级确实轮到他了。
+    //
+    // ⚠️ `SINGLE`（或签）级是**认领制**：没被认领之前页面上只有「认领这条任务」，
+    // 「通过」按钮要认领之后才出现。实测踩到：直接等「通过」，超时后的现场里
+    // 只有 `buttons=退出|认领这条任务`。所以先认领（幂等：已经认领过就不会有这个按钮）。
+    await waitFor(
+      "!!([].slice.call(document.querySelectorAll('button'))"
+        + ".filter((b) => b.textContent.trim() === '通过')[0])"
+        + " || !!([].slice.call(document.querySelectorAll('button'))"
+        + ".filter((b) => b.textContent.trim() === '认领这条任务')[0])",
+      "任务详情页渲染出可操作按钮",
+      20000,
+    );
+    const claimed = await evaluate(`(() => {
+      const el = [].slice.call(document.querySelectorAll('button'))
+        .filter((b) => b.textContent.trim() === '认领这条任务')[0];
+      if (!el) return 'already-claimed';
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      return 'clicked';
+    })()`);
+    if (claimed === "clicked") {
+      await waitFor(
+        "!!([].slice.call(document.querySelectorAll('button'))"
+          + ".filter((b) => b.textContent.trim() === '通过')[0])",
+        "认领之后出现「通过」按钮",
+        20000,
+      );
+    }
+    const approved = await evaluate(clickButton("通过"));
+    // ⚠️ **不要等"已通过"这几个字**：批准成功后组件会 `navigate` 离开任务详情页，
+    // 那几个字只会出现一瞬间（既有 M6 用例的注释就警告过这一点，这里又踩了一次）。
+    // 改成轮询**事实**：这张申请的主单状态变成 `SOURCING` 才算数 ——
+    // 这也是验收真正要的结论（"审批通过 → 进入询价"）。
+    const chainStatus = await pollStatus(chainId, "SOURCING");
+    check(
+      approved === "clicked" && chainStatus === "SOURCING",
+      "① 部门主管在页面上认领并点「通过」→ 主单进入 SOURCING（询价中）",
+      `认领=${claimed} 通过=${approved} 状态=${chainStatus}（任务=${todoTask.taskId.slice(0, 8)} 模式=${todoTask.mode}）`,
+    );
+
+    // ---------- 第 2 步：采购登记报价 + 定标 ----------
+    await loginAs("procurement");
+    await page.send("Page.navigate", { url: `${APP}/fulfillment?request=${chainId}` });
+    await waitFor("document.body.innerText.indexOf('比价与定标')>=0", "比价卡片渲染");
+
+    const supplierPicked = await evaluate(`(() => {
+      const select = document.querySelector('select');
+      if (!select) return 'no-select';
+      const option = [].slice.call(select.options).filter((o) => o.value)[0];
+      if (!option) return 'no-option';
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(select, option.value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return option.textContent.trim();
+    })()`);
+    await fillField("[data-testid=quotation-amount]", 300);
+    const quoted = await evaluate(clickButton("登记报价"));
+    await waitFor("document.body.innerText.indexOf('300.00')>=0", "报价出现在比价表里", 15000);
+    const awarded = await evaluate(clickButton("定标给它"));
+    const afterAward = await pollStatus(chainId, "AWARDED");
+    check(
+      supplierPicked !== "no-select" && quoted === "clicked" && awarded === "clicked"
+        && afterAward === "AWARDED",
+      "② 采购在页面上登记报价（300 元）并定标 → 主单进入 AWARDED",
+      `供应商=${supplierPicked} 登记=${quoted} 定标=${awarded} 状态=${afterAward}`,
+    );
+
+    // ---------- 第 3 步：下单 ----------
+    const placed = await evaluate(clickButton("生成订单"));
+    const afterOrder = await pollStatus(chainId, "ORDERED");
+    // 订单号与金额**从接口读**：这一步要证的是"后端按成交单价重算成了 300 元"
+    // （而不是申请金额 900 元）—— 页面上那串数字只是渲染结果。
+    const orderFacts = await evaluate(
+      `(async () => {
+        const detail = await (await fetch('/api/v1/requests/${chainId}/orders')).json();
+        return detail ? { no: detail.order.order_no, amount: detail.order.amount_fen } : null;
+      })()`,
+    );
+    check(
+      placed === "clicked" && afterOrder === "ORDERED" && orderFacts !== null
+        && orderFacts.amount === 30000,
+      "③ 采购点「生成订单」→ 主单 ORDERED，订单金额 30000 分（= 成交单价×数量，不是申请金额 90000）",
+      `状态=${afterOrder} 订单=${orderFacts ? `${orderFacts.no} / ${orderFacts.amount} 分` : "（没有订单）"}`,
+    );
+
+    // ---------- 第 4 步：收货 ----------
+    await loginAs("receiver");
+    await page.send("Page.navigate", { url: `${APP}/fulfillment?request=${chainId}` });
+    await waitFor("document.body.innerText.indexOf('整单收货')>=0", "收货表单渲染");
+    const received = await evaluate(clickButton("登记收货"));
+    const afterReceive = await pollStatus(chainId, "RECEIVED");
+    check(
+      received === "clicked" && afterReceive === "RECEIVED",
+      "④ 收货人点「登记收货」→ 主单 RECEIVED（整单收货：逐行收齐才让提交）",
+      `点击=${received} 状态=${afterReceive}`,
+    );
+
+    // ---------- 第 5 步：登记发票（故意先开成超容差，看页面会不会说清差异） ----------
+    await loginAs("finance");
+    await page.send("Page.navigate", { url: `${APP}/fulfillment?request=${chainId}` });
+    await waitFor(
+      "!!document.querySelector('[data-testid=invoice-amount]')",
+      "发票表单渲染（在 RECEIVED 状态下就该出现）",
+      20000,
+    );
+    await fillField("[data-testid=invoice-no]", `INV-PAGE-${stamp}`);
+    await fillField("[data-testid=invoice-amount]", 400); // 订单 300 → 超容差 100 元
+    const invoiced = await evaluate(clickButton("登记发票"));
+    await waitFor("document.body.innerText.indexOf('三单匹配')>=0", "匹配卡片渲染", 15000);
+    await waitFor("document.body.innerText.indexOf('AMOUNT_MISMATCH')>=0", "匹配差异渲染", 15000);
+    const mismatchText = await evaluate(
+      "(document.querySelector('main')||document.body).innerText.replace(/\\s+/g,' ')",
+    );
+    check(
+      invoiced === "clicked" && mismatchText.includes("AMOUNT_MISMATCH"),
+      "⑤ 发票开成 400 元（订单 300 元）→ 三单匹配页列出 AMOUNT_MISMATCH 并说清差多少",
+      (mismatchText.match(/AMOUNT_MISMATCH[^；]{0,80}/) || [""])[0],
+    );
+    const mismatchShot = await shot("08-m10-match-mismatch");
+    check(true, "三单匹配差异页已截图（对比页三列 + 高亮）", mismatchShot);
+
+    // 作废这张错票，重新按正确的金额登记 —— 走"录错了怎么办"这条真实路径
+    await evaluate(`(() => { window.confirm = () => true; window.prompt = () => '金额录错'; return 'ok'; })()`);
+    const voided = await evaluate(clickButton("作废"));
+    await waitFor("document.body.innerText.indexOf('已作废')>=0", "作废状态渲染", 15000);
+    await fillField("[data-testid=invoice-no]", `INV-PAGE-OK-${stamp}`);
+    await fillField("[data-testid=invoice-amount]", 300);
+    const reinvoiced = await evaluate(clickButton("登记发票"));
+    await waitFor("document.body.innerText.indexOf('在容差内')>=0", "匹配通过渲染", 15000);
+    check(
+      voided === "clicked" && reinvoiced === "clicked",
+      "⑥ 错票在页面上作废（状态变「已作废」）→ 按正确金额重开 → 匹配通过",
+      `作废=${voided} 重开=${reinvoiced}`,
+    );
+    const passedShot = await shot("09-m10-match-passed");
+    check(true, "三单匹配通过页已截图", passedShot);
+
+    // ---------- 第 6 步：创建付款单 → 执行付款 → 归档 ----------
+    const paymentCreated = await evaluate(clickButton("创建付款单"));
+    // ⚠️ 等**创建动作真的结束**（按钮文案从「创建中…」变回「创建付款单」），
+    // 而不是只等"待付款"这几个字出现。
+    // 实测踩到：只等文字时，下一步的「执行付款」还没渲染出来（那一刻页面上是
+    // `创建中…`），于是第一次点击落在空气上，白白多跑一轮。
+    await waitFor(
+      "!!([].slice.call(document.querySelectorAll('button'))"
+        + ".filter((b) => b.textContent.trim() === '创建付款单' && !b.disabled)[0])"
+        + " || !!([].slice.call(document.querySelectorAll('button'))"
+        + ".filter((b) => b.textContent.indexOf('执行付款') >= 0)[0])",
+      "创建付款单的动作结束（按钮回到可点状态）",
+      20000,
+    );
+
+    const payEvidence = [];
+    let afterPay = "INVOICED";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const before = await evaluate(`(() => {
+        const el = [].slice.call(document.querySelectorAll('button'))
+          .filter((b) => b.textContent.indexOf('执行付款') >= 0)[0];
+        return el ? { text: el.textContent.trim(), disabled: el.disabled } : { missing: true };
+      })()`);
+      // 按钮还没出现（上一步刚提交完）就先等它出现，别点空
+      if (before.missing) {
+        await waitFor(
+          "!!([].slice.call(document.querySelectorAll('button'))"
+            + ".filter((b) => b.textContent.indexOf('执行付款') >= 0)[0])",
+          "「执行付款」按钮出现",
+          20000,
+        );
+      }
+      const clicked = await evaluate(clickButton("执行付款"));
+      afterPay = await pollStatus(chainId, "PAID", attempt === 0 ? 12000 : 20000);
+      const pageText = await evaluate(
+        "(document.querySelector('main')||document.body).innerText.replace(/\\s+/g,' ')",
+      );
+      payEvidence.push(
+        `第${attempt + 1}次[按钮=${JSON.stringify(before)} 点击=${clicked} 状态=${afterPay}`
+          + ` 报错=${(pageText.match(/(三单匹配未通过|请求失败|已被处理)[^；。]{0,60}/) || ["无"])[0]}]`,
+      );
+      if (afterPay === "PAID") break;
+    }
+    const paidText = await evaluate(
+      "(document.querySelector('main')||document.body).innerText.replace(/\\s+/g,' ')",
+    );
+    check(
+      paymentCreated === "clicked" && afterPay === "PAID",
+      "⑦ 财务点「执行付款」→ 主单 PAID，页面显示实付与**释放的差额**",
+      payEvidence.join(" / ")
+        + "；页面提示="
+        + (paidText.match(/付款完成[^。]{0,70}/) || ["（没找到付款完成提示）"])[0],
+    );
+
+    const closed = await evaluate(clickButton("归档"));
+    const afterClose = await pollStatus(chainId, "CLOSED");
+    check(
+      closed === "clicked" && afterClose === "CLOSED",
+      "⑧ 点「归档」→ 主单 CLOSED（终态）",
+      `点击=${closed} 状态=${afterClose}`,
+    );
+
+    // ---------- 收尾核对：预算三个数与两笔流水 ----------
+    // 这一条是整块里最值钱的断言：**页面操作之后账要对**。
+    // 状态码全对但预算错，是这个系统最严重的失败方式（不报错、只是账不对）。
+    //
+    // ⚠️ 断言写成**相对基线**（进入这一块之前先记一份），而不是绝对数字：
+    // 同一条预算会被多轮实测反复使用（品类是复用的），绝对值每次都不一样。
+    // 实测踩到：写死 `reserved === 0` 时，因为库里还留着别的运行留下的预留，
+    // 断言失败在一个**与本次流程无关**的数字上。
+    const books = await evaluate(`(async () => {
+      const rows = await (await fetch('/api/v1/budgets/transactions?limit=50')).json();
+      const mine = rows.filter((row) => row.request_id === '${chainId}');
+      const budgets = await (await fetch('/api/v1/budgets')).json();
+      const budget = budgets.filter((b) => b.id === '${draftBudget.id}')[0];
+      return {
+        moves: mine.map((row) => row.kind + ':' + row.amount_fen).sort().join(','),
+        reserved: budget ? budget.amount_reserved_fen : null,
+        spent: budget ? budget.amount_spent_fen : null,
+        total: budget ? budget.amount_total_fen : null,
+      };
+    })()`);
+    check(
+      books.total === booksBefore.total &&
+        books.spent === booksBefore.spent + 30000 &&
+        books.reserved === booksBefore.reserved + 90000 - 90000 &&
+        books.moves.includes("RELEASE:60000") &&
+        books.moves.includes("SPEND:30000"),
+      "⑨ 账对上了：总额不变、已花 +30000、本单预留归零，流水里有 SPEND:30000 与 RELEASE:60000",
+      `基线=${JSON.stringify(booksBefore)} 现在=${JSON.stringify(books)}`,
+    );
+
+    const closedShot = await shot("10-m10-closed");
+    check(true, "全链路终态页已截图", closedShot);
   }
 
   // ---------- 直接访问一个不存在的任务：要看得到 404，不是白屏 ----------

@@ -158,10 +158,18 @@ const HELPERS = [
 
 const expr = (body) => "(() => {" + HELPERS + body + "})()";
 
-const loginExpr = (u, p) => expr(
-  "setInput(document.querySelector('input[autocomplete=\"username\"]')," + JSON.stringify(u) + ");"
-  + "setInput(document.querySelector('input[type=\"password\"]')," + JSON.stringify(p) + ");"
-  + "document.querySelector('form').requestSubmit();return true;",
+const loginExpr = (u, p) =>
+  expr(
+    "setInput(document.querySelector('input[autocomplete=\"username\"]')," + JSON.stringify(u) + ");"
+    + "setInput(document.querySelector('input[type=\"password\"]')," + JSON.stringify(p) + ");"
+    + "document.querySelector('form').requestSubmit();return true;",
+  );
+
+/** 点侧边栏底部的「退出」。换账号跑权限断言时用（同一次会话不能直接登另一个账号）。 */
+const logoutIfLoggedIn = expr(
+  "var b=[].slice.call(document.querySelectorAll('button'))"
+  + ".filter(function(x){return x.textContent.trim()==='退出'})[0];"
+  + "if(b){b.click();}return true;",
 );
 
 // M4 起外壳是「左侧边栏 + 右侧内容区」：账号与退出在侧边栏底部，
@@ -325,11 +333,7 @@ async function main() {
     // ---------- B. 换账号看权限 ----------
     await page.send("Page.navigate", { url: APP + "/admin/suppliers" });
     await waitFor(page, "!!document.querySelector('aside')", "回到管理页（侧边栏已渲染）");
-    await page.evaluate(expr(
-      "var b=[].slice.call(document.querySelectorAll('button'))"
-      + ".filter(function(x){return x.textContent.trim()==='退出'})[0];"
-      + "if(b){b.click();}return true;",
-    ));
+    await page.evaluate(logoutIfLoggedIn);
     await waitFor(page, "location.pathname === '/login'", "退出后回登录页");
     check("A6 点「退出」→ 回到 /login", true, await page.evaluate("location.pathname"));
 
@@ -338,13 +342,15 @@ async function main() {
     await waitFor(page, "location.pathname === '/'", "requester 登录成功");
     const rqSidebar = await page.evaluate(sidebarTextExpr);
     const rqMenu = await page.evaluate(menuItemsExpr);
-    // 4 项 = 环境自检 / 我的申请 / 我的待办 / 合格供应商
-    //（M5 加了「我的申请」，M6 加了「我的待办」—— 它不限角色，登录即可见）。
-    // 断言写成"恰好这几项"，而不是"数量等于 4"：数量对不上时，
+    // 5 项 = 环境自检 / 我的申请 / 我的待办 / 合格供应商 / 制度助手
+    //（M5 加「我的申请」，M6 加「我的待办」，M11 加「制度助手」—— 后两个都不限角色）。
+    // **M10 的「履约工作台」不在这一组里**：它只对采购 / 收货 / 财务三个角色显示，
+    // 而 requester 一个都没有 —— 这条断言同时也在守着"履约菜单不会漏给所有人"。
+    // 断言写成"恰好这几项"，而不是"数量等于 N"：数量对不上时，
     // 报错信息里能直接看出多了或少了哪一项。
     check("B1 requester 侧边栏没有管理员菜单，只剩普通员工的几项",
       rqSidebar.includes("张申请") && rqSidebar.includes("REQUESTER")
-      && rqMenu.join("/") === "环境自检/我的申请/我的待办/合格供应商",
+      && rqMenu.join("/") === "环境自检/我的申请/我的待办/合格供应商/制度助手",
       "菜单=" + rqMenu.join("/"));
 
     await page.send("Page.navigate", { url: APP + "/admin/categories" });
@@ -354,8 +360,120 @@ async function main() {
     ));
     check("B2 requester 打开 /admin/categories 显示「无权限」而不是白屏", true, forbidden);
 
-    // 顺手留一张截图（只看渲染有没有崩，不参与判定）
+    // ---------- B3/M10：履约工作台（只有采购 / 收货 / 财务看得到） ----------
+    // 为什么值得单独一条：这是 M10 唯一的界面入口，而它的可见性判断在**三处**
+    // 各写了一遍（菜单、路由守卫、首页快捷入口）——
+    // 三处不一致的表现是"菜单上有、点进去说无权限"（或反过来），
+    // 光看代码很难发现。所以这里用**采购账号**实际走一遍。
+    await page.evaluate(logoutIfLoggedIn);
+    await page.send("Page.navigate", { url: APP + "/login" });
+    await waitFor(page, "!!document.querySelector('input[type=password]')", "回登录页");
+    await page.evaluate(loginExpr("procurement", "Dev-Passw0rd!"));
+    await waitFor(page, "location.pathname === '/'", "procurement 登录成功");
+
+    const procMenu = await page.evaluate(menuItemsExpr);
+    // 断言的是**两件事**，而不是一个写死的整串（写死整串会在每次加菜单时
+    // 变成"改断言"而不是"发现问题"）：
+    //   ① 采购有「履约工作台」（它是三个履约角色之一）；
+    //   ② 「制度助手」在它前面 —— 菜单顺序表达的是"日常动线"：
+    //      查制度是所有人每天都会做的，履约是审批通过之后才轮到的。
+    const fulfillIndex = procMenu.indexOf("履约工作台");
+    const chatIndex = procMenu.indexOf("制度助手");
+    check("B3 采购的菜单里有「履约工作台」，且「制度助手」排在它前面",
+      fulfillIndex >= 0 && chatIndex >= 0 && chatIndex < fulfillIndex,
+      "菜单=" + procMenu.join("/"));
+
+    await page.send("Page.navigate", { url: APP + "/fulfillment" });
+    const workbench = await page.evaluate(expr(
+      "return new Promise(function(resolve){"
+      + "  var n=0;"
+      + "  (function tick(){"
+      + "    var t=document.body.innerText;"
+      + "    if(t.indexOf('履约工作台')>=0 && t.indexOf('待询价')>=0){"
+      + "      return resolve({ok:true, text:t.slice(0,200)}); }"
+      + "    if(++n>50) return resolve({ok:false, text:t.slice(0,200)});"
+      + "    setTimeout(tick, 100);"
+      + "  })();"
+      + "});",
+    ));
+    check("B4 采购打开履约工作台能看到「待询价」队列（不是无权限页）",
+      workbench.ok === true,
+      String(workbench.text).replace(/\s+/g, " ").slice(0, 120));
+
+    // 反证：申请人**不该**看得到这个工作台（后端每个接口都会独立校验，
+    // 这里验的是前端守卫也拦住了，别让人进去看一堆空卡片）
+    await page.evaluate(logoutIfLoggedIn);
+    await page.send("Page.navigate", { url: APP + "/login" });
+    await waitFor(page, "!!document.querySelector('input[type=password]')", "再回登录页");
+    await page.evaluate(loginExpr("requester", "Dev-Passw0rd!"));
+    await waitFor(page, "location.pathname === '/'", "requester 重新登录");
+    await page.send("Page.navigate", { url: APP + "/fulfillment" });
+    // ⚠️ 必须**轮询等待**，不能刚 navigate 完就读 body：
+    // 那一瞬间页面还没渲染（实测踩到：断言拿到的是上一页的内容，于是假失败）。
+    // `RequireAuth` 要先等 `useMe()` 回来才决定是渲染子页面还是"无权限"。
+    const denied = await page.evaluate(expr(
+      "return new Promise(function(resolve){"
+      + "  var n=0;"
+      + "  (function tick(){"
+      + "    var t=" + bodyTextExpr + ";"
+      + "    if(t.indexOf('无权限')>=0) return resolve({ok:true, text:t.slice(0,120)});"
+      + "    if(++n>50) return resolve({ok:false, text:t.slice(0,120)});"
+      + "    setTimeout(tick, 100);"
+      + "  })();"
+      + "});",
+    ));
+    check("B5 申请人打开 /fulfillment 显示「无权限」而不是空工作台",
+      denied.ok === true,
+      String(denied.text).replace(/\s+/g, " ").slice(0, 110));
+
+    // ---------- B6/B7/M11：制度助手与知识库 ----------
+    // M11 的前端是**另一个子代理写的**（我只接线），所以"页面真的渲染出来"
+    // 这件事更需要真浏览器验一遍：tsc 通过只说明类型对，不说明渲染不崩。
+    await page.send("Page.navigate", { url: APP + "/chat" });
+    const chat = await page.evaluate(expr(
+      "return new Promise(function(resolve){"
+      + "  var n=0;"
+      + "  (function tick(){"
+      + "    var t=" + bodyTextExpr + ";"
+      + "    var input=document.querySelector('[data-testid=chat-input]');"
+      + "    if(t.indexOf('制度助手')>=0 && input){"
+      + "      return resolve({ok:true, text:t.slice(0,160)}); }"
+      + "    if(++n>60) return resolve({ok:false, text:t.slice(0,160)});"
+      + "    setTimeout(tick, 100);"
+      + "  })();"
+      + "});",
+    ));
+    check("B6 申请人打开 /chat 能看到提问输入框（制度助手不限角色）",
+      chat.ok === true,
+      String(chat.text).replace(/\s+/g, " ").slice(0, 120));
+
+    // 知识库管理：**非管理员应当被守卫拦下**。改知识库等于改所有回答的"制度依据"，
+    // 而依据被改过之后所有回答的可信度都会变 —— 所以它跟 `/admin/*` 一样只给 ADMIN。
+    await page.send("Page.navigate", { url: APP + "/admin/knowledge" });
+    const knowledgeDenied = await page.evaluate(expr(
+      "return new Promise(function(resolve){"
+      + "  var n=0;"
+      + "  (function tick(){"
+      + "    var t=" + bodyTextExpr + ";"
+      + "    if(t.indexOf('无权限')>=0) return resolve({ok:true, text:t.slice(0,110)});"
+      + "    if(++n>50) return resolve({ok:false, text:t.slice(0,110)});"
+      + "    setTimeout(tick, 100);"
+      + "  })();"
+      + "});",
+    ));
+    check("B7 非管理员打开 /admin/knowledge 显示「无权限」而不是知识库界面",
+      knowledgeDenied.ok === true,
+      String(knowledgeDenied.text).replace(/\s+/g, " ").slice(0, 100));
+
+    // 截图回到工作台（收了尾再拍：这里页面已经不在了就跳过，判定不受影响）。
+    // ⚠️ 顺序不能反：`Page.navigate` 必须**在拍之前**，而拍完不能再导航 ——
+    // 实测踩到：先导航再拍会让 target 处于"未附着"状态，直接抛
+    // `Not attached to an active page` 把整个自检中断在收尾处。
+    await page.send("Page.navigate", { url: APP + "/" });
+    await waitFor(page, "!!document.querySelector('aside')", "回到首页准备截图");
     const shot = await page.send("Page.captureScreenshot", { format: "png" });
+
+    // 顺手留一张截图（只看渲染有没有崩，不参与判定）
     writeFileSync(join(tmpdir(), "procurement-selfcheck.png"), Buffer.from(shot.data, "base64"));
     console.log("\n截图已存：" + join(tmpdir(), "procurement-login.png")
       + " 和 " + join(tmpdir(), "procurement-selfcheck.png"));
