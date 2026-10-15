@@ -31,6 +31,7 @@ from app.domain.grounded_answer import (
     build_user_prompt,
     check_citation_integrity,
     decide_grounding,
+    has_confident_grounding,
 )
 
 pytestmark = pytest.mark.unit
@@ -203,3 +204,70 @@ def test_system_prompt_covers_the_four_rules() -> None:
     assert "标注引用来源编号" in SYSTEM_PROMPT
     assert "制度中没有找到相关规定" in SYSTEM_PROMPT
     assert "不能执行任何采购操作" in SYSTEM_PROMPT
+
+# ---------------------------------------------------------------- 规则一之二：依据够不够硬
+#
+# 这一组钉的是 M12++ 的**三档判据**（见 `_should_use_agent`）。
+# 它判错**不会报错**，只会让"业务数据问题被制度片段答掉"（看起来像回答）
+# 或者"真制度问题被拒答"。两个方向都很隐蔽，所以必须有测试。
+
+
+def test_no_sources_is_never_confident() -> None:
+    """没有片段 → 谈不上"依据够硬"。"""
+    assert has_confident_grounding([], strong_score=0.7) is False
+
+
+def test_score_at_or_above_strong_is_confident() -> None:
+    """达到强阈值（含等于）→ 直接用它回答，不再试 Agent。"""
+    assert has_confident_grounding([source(score=0.70)], strong_score=0.70) is True
+    assert has_confident_grounding([source(score=0.75)], strong_score=0.70) is True
+
+
+def test_score_below_strong_is_not_confident() -> None:
+    """低于强阈值 → 不够硬，先让 Agent 试一次。
+
+    实测那两个真制度问题就落在这里（0.597 / 0.584）—— 它们**越过了** min_score
+    所以"可以用检索回答"，但**没到**强阈值所以"不直接回答"。
+    两档的差别正是这一组测试守的东西。
+    """
+    assert has_confident_grounding([source(score=0.597)], strong_score=0.70) is False
+
+
+def test_confident_looks_at_the_best_source_not_the_first() -> None:
+    """判据取**最高分**，不是第一条。
+
+    检索是按距离升序给的，正常情况下第一条就是最高分 —— 但"正常情况"
+    不该是判据的依赖：序号与分数一旦不同步，按第一条判会**静默判反**。
+    """
+    assert (
+        has_confident_grounding(
+            [source(1, 0.55), source(2, 0.91)], strong_score=0.70
+        )
+        is True
+    )
+    assert (
+        has_confident_grounding(
+            [source(1, 0.91), source(2, 0.55)], strong_score=0.70
+        )
+        is True
+    )
+
+
+def test_strong_threshold_boundary_is_inclusive() -> None:
+    """边界取**含等号**：分数恰好等于强阈值算"够硬"。
+
+    这一条钉住的是"边界到底算哪边"—— 差一个等号的错误没有症状，
+    只会让某一批分数**恰好卡在线上**的问题走错分支，而那种问题平时见不到。
+    """
+    assert has_confident_grounding([source(score=0.70)], strong_score=0.70) is True
+    assert has_confident_grounding([source(score=0.6999)], strong_score=0.70) is False
+
+
+def test_degenerate_strong_score_is_documented_not_guarded() -> None:
+    """`strong_score = 0` 是**退化配置**：任何分数都 ≥ 0，于是恒为"够硬"。
+
+    这里**不做兜底**（判据本体只做比大小），配置合法性由装配处校验 ——
+    见 `build_knowledge_coordinator`。这个测试的作用是**把这个事实写下来**：
+    看到"它怎么永远返回 True"时，能立刻知道这是配置问题、不是判据坏了。
+    """
+    assert has_confident_grounding([source(score=0.01)], strong_score=0.0) is True

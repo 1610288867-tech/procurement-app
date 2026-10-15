@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -79,6 +79,7 @@ from app.domain.grounded_answer import (
     build_user_prompt,
     check_citation_integrity,
     decide_grounding,
+    has_confident_grounding,
 )
 from app.domain.model_pricing import parse_model_prices
 from app.errors import BusinessError, ConflictError, NotFoundError
@@ -343,6 +344,7 @@ class KnowledgeCoordinator:
         uow: UnitOfWork,
         top_k: int,
         min_score: float,
+        strong_score: float = 0.70,
         price_config: str = "",
         purchase: PurchaseCoordinator | None = None,
         approval: ApprovalCoordinator | None = None,
@@ -358,6 +360,8 @@ class KnowledgeCoordinator:
         self._uow = uow
         self._top_k = top_k
         self._min_score = min_score
+        #: "依据够不够硬"的第二道线（见 `_should_use_agent` 的三档判据）
+        self._strong_score = strong_score
         #: 模型价格表配置（`model=输入价,输出价;...`），用于成本核算。
         #: **保留原始字符串**而不是解析后的字典：坏配置要在**每次真正用到时**
         #: 报一次警告（而不是启动时静默丢掉），而且改了 .env 重启即生效。
@@ -684,27 +688,74 @@ class KnowledgeCoordinator:
             usage=captured[-1] if captured else None,
         )
 
+    async def _answer_from_policy(
+        self,
+        prepared: dict[str, Any],
+        *,
+        on_usage: Callable[[ModelUsage], None],
+    ) -> AsyncIterator[str]:
+        """用**已有的制度片段**生成回答（弱依据回落时走它）。
+
+        ============================ 为什么抽成一个方法 ============================
+        这是"制度问答"那条路原本的正文生成逻辑，现在有**两个调用点**：
+        ① `ask_stream` 的正常制度问答分支；
+        ② `_answer_with_agent` 的**弱依据回落**分支（Agent 一个工具都没调时）。
+
+        两处各写一遍的代价实测过：回落分支第一版漏了这段，于是
+        "采购金额超过十万元…"（0.597）与"廉洁从业禁止哪些行为？"（0.584）
+        两条**真制度问题**返回了**空回答** —— 比原来的拒答还糟
+        （拒答至少是明确的一句话）。同一个逻辑写两遍，就一定会有一遍是错的。
+        """
+        async for piece in self._chat.stream(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=prepared["user_prompt"],
+            sources=prepared["sources"],
+            on_usage=on_usage,
+        ):
+            yield piece
+
     def _should_use_agent(self, prepared: dict[str, Any]) -> bool:
         """这次提问该走 Agent 还是走制度问答。
 
-        ============================ 判据只有一条：**检索给的依据够不够** ============================
-            有依据（超过阈值）      → 制度问答（依据原文回答 + 两层引用校验）
-            没依据 + 模型会用工具    → Agent（去查真实业务数据）
-            没依据 + 模型不会用工具  → 原来的"制度中没有找到相关规定"
+        ============================ 判据：**三档**，不是"有没有依据"两档 ============================
+        实测（2026-10-15）业务数据问题与制度问题的 top_score **是重叠的**：
+        "我提过哪些采购申请？"（业务）0.624，而"廉洁从业禁止哪些行为？"（制度）0.584 ——
+        **业务那条比制度那条还高**。所以任何单点阈值都分不开这两类。
 
-        为什么不额外看"问题里有没有关键词"：那要靠规则去猜自然语言，
-        猜错的方向有两个（把数据问题当制度问题、反之），而两个方向都很难被发现。
-        **相似度是本系统已经算出来的信号**，用它更稳、也更容易解释。
+        既然分不开，就改看**答错的代价**：
+
+            用制度片段回答业务数据问题 → 答非所问，且**看起来像回答**（最糟）
+            让 Agent 去处理制度问题     → 它没有查制度的工具 → **诚实地拒答**
+
+        后者是安全的一侧（本项目的铁律：没有来源就不回答）。于是：
+
+            score ≥ `strong_score`       → 制度问答（依据够硬，直接答）
+            `min_score` ≤ score < 强阈值 → **先试 Agent**（它可能查得到真实数据）；
+                                          一个工具都没调 → 落回制度问答原本那条路
+            score < `min_score`          → 没依据（原有行为，不变）
+
+        ⚠️ **代价**：顶分落在 [min, strong) 的**真制度问题**会先浪费一次 Agent 轮次，
+        才落到制度问答 —— 多花一点时间，答案不变。
 
         `ask` 与 `ask_stream` **都调这一个方法** —— 判据只有一处，
         两条路不可能给出不同的结论。
+
+        （没有工具依赖时**一律不走 Agent**，这一条是回归探针"接缝⑦"钉住的。）
         """
-        return (
-            not prepared["decision"].use_model
-            and self._chat.supports_tools
+        if not (
+            self._chat.supports_tools
             and self._purchase is not None
             and self._approval is not None
-        )
+        ):
+            return False
+        decision = prepared["decision"]
+        if decision.use_model:
+            # 有依据，但**够不够硬**是另一回事：不够硬就先让 Agent 试
+            return not has_confident_grounding(
+                prepared["sources"], strong_score=self._strong_score
+            )
+        # 没依据：Agent 是唯一还可能答得上来的路径（它去查真实业务数据）
+        return True
 
     def _used_remote(self, decision: Any, *, agent_used: bool = False) -> bool:
         """这次回答有没有真的调用**远端模型**。
@@ -1035,6 +1086,11 @@ class KnowledgeCoordinator:
         assert self._purchase is not None and self._approval is not None  # noqa: S101
         actor = await self._principal_for(prepared)
         session = prepared["session"]
+        #: 弱依据回落那条路要用到它（见下面 `not agent_used_tools` 那个分支）
+        decision = prepared["decision"]
+        #: 回落时会**新调一次模型**，用量收在这里（与 Agent 那次的用量分开：
+        #: 混在一起会让"这次花了多少"对不上任何一次调用）
+        fallback_usage: list[ModelUsage] = []
 
         pieces: list[str] = []
         steps: list[dict[str, Any]] = []
@@ -1113,6 +1169,83 @@ class KnowledgeCoordinator:
         # 页面于是不显示「未调用模型」徽标、回答却又是本地兜底的原话。
         # 退回确定性路径之后，两条路都不再调用模型，`meta` 与落库结果一致。
         if not agent_used_tools(steps):
+            # ============================ M12++：**弱依据**要落回制度问答，而不是一句拒答 ============================
+            # 三档判据（见 `_should_use_agent`）会把"依据不够硬"的问题先交给 Agent 试。
+            # 而 Agent**没有查制度的工具**，所以一个工具都没调是**正常结果** ——
+            # 这时该做的是**回到制度问答那条原本的路**（用已有片段流式回答），
+            # 不是回一句"制度中没有找到相关规定"（那会把本来答得上来的
+            # 0.597 / 0.584 那批真制度问题直接变成拒答）。
+            #
+            # 未配模型或本来就没依据时没有"原本那条路"可回 → 仍是那句标准话术。
+            #
+            # ⚠️ **刻意判"用不用 Agent 的答案"，而不是"Agent 答得好不好"**（实测踩到）：
+            # 中途试过"Agent 的回答够长 (>16 字) 就用它的" —— 那条启发式**不稳**：
+            # 同一类问题，Agent 有时回 7 字（"系统里没有查到"）、有时回 21 字
+            # （"系统里没有查到关于廉洁从业禁止行为的信息。"），
+            # 于是同一批真制度问题**时而答对、时而答"没查到"**。
+            #
+            # 判据要**确定性**：Agent 没调工具 ⇒ 它对这次回答**没有贡献任何依据** ⇒
+            # 那就用制度片段答（这些问题的路由本来就是为制度问答准备的）。
+            # 代价与收益都摆在这里：Agent 偶尔给出的一句"没查到"会被丢弃 ——
+            # 那正是想要的（它没有依据，而制度片段有）。
+            #
+            # ⚠️ 那代价的另一面：**弱依据里的业务数据问题**（例如"我提过哪些采购申请？"
+            # 0.624）也会被这样丢掉。根因是"检索分不出这两类问题"
+            # （见 `_should_use_agent` 的实测分数），结构性缺口 ——
+            # 彻底解法是给 Agent 一个**查制度的工具**（那它就什么都能答），
+            # 而不是继续调阈值。已记入 RISKS 第五节。
+            if decision.use_model and not agent_used_tools(steps):
+                streamed = False
+                try:
+                    async for piece in self._answer_from_policy(
+                        prepared, on_usage=fallback_usage.append
+                    ):
+                        streamed = True
+                        pieces.append(piece)
+                        yield "delta", {"text": piece}
+                except Exception as exc:  # noqa: BLE001
+                    await self._record_failure(prepared, reason=f"模型调用失败：{exc}")
+                    yield "error", {"message": f"模型调用失败：{exc}"}
+                    return
+                model_ms = int((time.perf_counter() - model_started) * 1000)
+                result = await self._finish(
+                    prepared,
+                    answer="".join(pieces),
+                    model_ms=model_ms,
+                    usage=fallback_usage[-1] if fallback_usage else usage,
+                    # ⚠️ 传 False：Agent 一个工具都没调，**这次回答的依据是制度片段**、
+                    # 不是 Agent 查到的业务数据。轨迹照旧落库（它是诊断信息）。
+                    agent_used=False,
+                    agent_steps=steps,
+                    agent_stop_reason="fell_back_to_policy",
+                    agent_run_id=str(actual_run_id) if actual_run_id else None,
+                )
+                # ============================ 空回答是**必须拦住**的那种失败 ============================
+                # 实测踩到：回落分支第一版没接这段逻辑，两条真制度问题返回了**空正文**。
+                # 空回答比"拒答"更糟 —— 页面上一片空白，用户不知道是没查到还是坏了。
+                # 所以这里判"一个字都没吐出来"，就换成那句确定性的标准话术。
+                if not streamed or not "".join(pieces).strip():
+                    empty_fallback = str(decision.fallback_answer)
+                    yield "delta", {"text": empty_fallback}
+                    result = await self._finish(
+                        prepared,
+                        answer=empty_fallback,
+                        model_ms=model_ms,
+                        usage=fallback_usage[-1] if fallback_usage else usage,
+                        agent_used=False,
+                        agent_steps=steps,
+                        agent_stop_reason="fell_back_to_policy_empty",
+                        agent_run_id=str(actual_run_id) if actual_run_id else None,
+                    )
+                yield "done", self._done_payload(
+                    result,
+                    rounds=rounds,
+                    stop_reason="fell_back_to_policy",
+                    run_id=actual_run_id,
+                    reused_steps=reused,
+                )
+                return
+
             # 判据与说明在 `_settle_agent_answer`（非流式那条路也走它）
             fallback = str(prepared["decision"].fallback_answer)
             yield "delta", {"text": fallback}
@@ -1267,27 +1400,69 @@ class KnowledgeCoordinator:
                 stop_reason=stop_reason,
             )
 
-        answer, steps = self._settle_agent_answer(
-            prepared, answer="".join(pieces), steps=steps
-        )
+        answer = "".join(pieces)
+        # ============================ 与流式那条路**同源**的回落 ============================
+        # 一个工具都没调时：
+        #   · 有依据（弱依据）**且 Agent 没给出实质回答** → 用制度片段生成回答
+        #   · 没依据                                     → 那句确定性话术
+        #
+        # ⚠️ **"Agent 答了就别再叠一段"**：实测踩到 —— Agent 对制度问题给了一句
+        # "制度中没有找到相关规定，无法直接回答…"（非空），这里再追加制度答案，
+        # 同一个回答里就出现**两段互相矛盾的话**（"没规定" + "规定是…"）。
+        # 用户看到的是系统自己在打架。
+        #
+        # 判据用长度阈值（`_NO_SUBSTANCE_LENGTH`）而不是「非空」：
+        # Agent 常回一句"系统里没有查到"这种**半截话**，它也是非空的，
+        # 但那不算"给出了回答"，此时正该由制度片段来答。
+        #
+        # ⚠️ 第一版只在**流式**那条路做了回落，于是非流式（curl 与集成测试打的
+        # 偏偏是它）对这类真制度问题返回了**空回答** —— 比拒答还糟。
+        # 两条路必须落在同一段逻辑上。
+        if (
+            not agent_used_tools(steps)
+            and prepared["decision"].use_model
+        ):
+            recorded: list[ModelUsage] = []
+            streamed = "".join(
+                [
+                    piece
+                    async for piece in self._answer_from_policy(
+                        prepared, on_usage=recorded.append
+                    )
+                ]
+            )
+            if recorded:
+                usage = recorded[-1]
+            stop_reason = "fell_back_to_policy"
+            answer = streamed.strip()
+            if not answer:
+                # 空回答比拒答更糟（页面上是一片空白）→ 换成那句标准话术
+                answer = str(prepared["decision"].fallback_answer)
+                stop_reason = "fell_back_to_policy_empty"
+
         return answer, steps, usage, stop_reason, actual_run_id, reused_steps
 
     @staticmethod
     def _settle_agent_answer(
         prepared: dict[str, Any], *, answer: str, steps: list[dict[str, Any]]
     ) -> tuple[str, list[dict[str, Any]]]:
-        """**一个工具都没调 → 退回确定性话术。**
+        """**已不再被调用**（M12++ 起两条路各自内联了更完整的回落）。
 
-        流式与非流式**共用这一个判据**，理由见 `_answer_with_agent` 里那段说明：
-        模型没有查制度的工具，所以"制度里有没有这条规定"它答不了 —— 而它不会承认，
-        只会给一句半截的"系统里没有查到"。那条路会**绕过本地兜底那句确定性话术**，
-        于是同一个问题在"配了模型"和"没配模型"两种后端配置下给出**两套不同的回答**。
+        ============================ 为什么留着它 ============================
+        它是"一个工具都没调 → 换成确定性话术"这条判据**最初的定义处**，
+        也是这个项目里被反复引用的一个教训的现场：
 
-        判据是"**真的调过工具吗**"：调了 → 这次回答的依据来自业务数据，用它；
-        一个都没调 → 它接不了这个问题 → 换成 `decide_grounding` 给出的那句标准话术。
+            模型没有查制度的工具 → 它答不了制度问题 → 但它不会承认，
+            只会给一句半截的"系统里没有查到" → **绕过了那句标准拒答**，
+            于是同一个问题在"配了模型"和"没配模型"下给出两套回答。
 
-        返回 `(最终回答, 最终轨迹)` —— 轨迹原样带回（它是诊断信息，
-        "模型没调工具"这件事本身要能从落库的 `support_details` 里看出来）。
+        那个缺陷的**形态**比结论更有价值，所以实现留着当参照。
+        真正在跑的逻辑是 `_answer_with_agent` 与 `_collect_agent` 里那两段 ——
+        它们比这里多一件重要的事：**弱依据时回落去用制度片段回答**，
+        而不是一律换成拒答（否则 0.597 / 0.584 那批真制度问题会变成拒答）。
+
+        ⚠️ **不要再把它接回调用链**：它的行为（一律拒答）已经被判定为
+        对弱依据场景是错的。要改回落逻辑，改那两处。
         """
         if agent_used_tools(steps):
             return answer, steps
@@ -1324,6 +1499,7 @@ class KnowledgeCoordinator:
         agent_stop_reason: str | None = None,
         agent_run_id: str | None = None,
         reused_steps: int = 0,
+        agent_used: bool | None = None,
     ) -> dict[str, Any]:
         """回答的**公共后半段**：两层引用校验 → 追加提示 → 落库。
 
@@ -1366,7 +1542,14 @@ class KnowledgeCoordinator:
         # 所以只认 `tool_call` / `tool_result`：那才代表"这次回答的依据来自工具调用"。
         # 判据抽成了纯函数（`agent_used_tools`），因为它**必须能离线单测** ——
         # 这个恒真条件在集成测试里凑不出复现场景（需要"检索命中 + 模型一个工具都不调"）。
-        if agent_used_tools(agent_steps):
+        #
+        # ⚠️ `agent_used` 参数是给**M12++ 的弱依据回落**用的（见 `_answer_with_agent`）：
+        # 那时 Agent 一个工具都没调（正常结果），回答改由**制度片段**流式生成 ——
+        # 依据不是业务数据，所以这里要能显式说 `False`，而不是靠轨迹去推。
+        went_through_tools = (
+            agent_used if agent_used is not None else agent_used_tools(agent_steps)
+        )
+        if went_through_tools:
             problems = [item for item in problems if "没有任何引用编号" not in item]
 
         # 提示语只有一个来源（`CITATION_WARNING`）—— 两层问题合并后只追加一次，
@@ -1387,7 +1570,11 @@ class KnowledgeCoordinator:
         # Agent 一个工具都没调时会退回本地兜底那句写死的话术 —— 那时采用的字**不是模型生成的**，
         # 记成"调用了模型"同样是说谎。`agent_used_tools` 是这条判据的唯一定义处。
         used_remote = self._used_remote(
-            prepared["decision"], agent_used=agent_used_tools(agent_steps)
+            # `bool(agent_steps)` 那一项覆盖**弱依据回落**：那时 Agent 跑过（所以有轨迹）、
+            # 一个工具都没调，而回答是**由模型**基于制度片段生成的 ——
+            # 远端模型确实被调用了，`used_model` 就该是 True。
+            prepared["decision"],
+            agent_used=went_through_tools or bool(agent_steps),
         )
         cost_micros = estimate_cost_micros(
             prompt_tokens=usage.prompt_tokens if usage else None,
@@ -1512,6 +1699,7 @@ def build_knowledge_coordinator(
     embedder: EmbeddingPort,
     top_k: int,
     min_score: float,
+    strong_score: float = 0.70,
     price_config: str = "",
     purchase: PurchaseCoordinator | None = None,
     approval: ApprovalCoordinator | None = None,
@@ -1525,6 +1713,19 @@ def build_knowledge_coordinator(
     来验证两条校验，而把选实现的逻辑写死在装配里，那两条验证就只能靠真模型碰运气。
     选哪一个实现由**边界层**决定（见 `boundaries/http/knowledge.py`）。
     """
+    # ============================ 两个阈值的关系要在**装配处**校验 ============================
+    # `min_score` 管"能不能用检索回答"，`strong_score` 管"要不要直接回答"。
+    # 若 `strong_score < min_score`，三档判据就退化成"有依据就直接答" ——
+    # 弱依据那条分支**永远走不到**，而它在代码里看起来还在。
+    # 这种配置错误的表现是"路由莫名其妙全走制度问答"，所以宁可启动就报。
+    if strong_score and strong_score < min_score:
+        raise BusinessError(
+            f"KNOWLEDGE_STRONG_SCORE（{strong_score}）不能小于 "
+            f"KNOWLEDGE_MIN_SCORE（{min_score}）—— "
+            "否则「依据不够硬时先试 Agent」那条分支永远走不到",
+            status_code=500,
+            code="KNOWLEDGE_THRESHOLDS_INVERTED",
+        )
     return KnowledgeCoordinator(
         knowledge=KnowledgeRepository(session),
         object_store=object_store,
@@ -1533,6 +1734,7 @@ def build_knowledge_coordinator(
         uow=session,
         top_k=top_k,
         min_score=min_score,
+        strong_score=strong_score,
         price_config=price_config,
         purchase=purchase,
         approval=approval,

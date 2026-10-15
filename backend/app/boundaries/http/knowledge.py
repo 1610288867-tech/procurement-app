@@ -141,6 +141,8 @@ def knowledge_coordinator(session: SessionDep) -> KnowledgeCoordinator:
         embedder=_embedder(),
         top_k=settings.knowledge_top_k,
         min_score=settings.knowledge_min_score,
+        # "依据够不够硬"的第二道线（三档判据，见 `_should_use_agent`）
+        strong_score=settings.knowledge_strong_score,
         # 价格表：用于成本核算。**配了本地模型也要写一条 `0,0`** ——
         # "确实不花钱"与"不知道花多少"在数据里必须区分（见 `domain/cost.py`）。
         price_config=settings.knowledge_llm_prices,
