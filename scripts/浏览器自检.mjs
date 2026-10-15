@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const APP = "http://localhost:5173";
 const PORT = 9222;
@@ -25,8 +26,13 @@ const CAT_NAME = "自检品类 " + stamp;
 const CAT_CODE = "SELFCHECK-" + stamp;
 
 const results = [];
+//: 未通过项的名字。**为什么单独留一份**：回归入口里这一步失败时只报
+//: 「浏览器自检有未通过项」—— 而它上面那 17 行 PASS 已经把真正失败的那一条挤出屏幕了，
+//: 排查只能靠重跑（实测为一条偶发失败重跑过两次）。收在这里，结尾统一再列一遍。
+const failures = [];
 function check(name, ok, detail) {
   results.push(ok);
+  if (!ok) failures.push(name);
   console.log((ok ? "PASS  " : "FAIL  ") + name + (detail ? "   —— " + detail : ""));
 }
 
@@ -132,16 +138,45 @@ async function openPage(url) {
   return { send: conn.send, evaluate, events: conn.events, close: () => conn.ws.close() };
 }
 
-async function waitFor(page, expression, label, timeoutMs = 12000) {
+// 导出给单测用（见 `scripts/测试/浏览器自检.waitFor.test.mjs`）：
+// 这段重试语义的**唯一风险是"容错把失败变成通过"**，所以必须能对着假页面验。
+export async function waitFor(page, expression, label, timeoutMs = 12000) {
   const deadline = Date.now() + timeoutMs;
   let last;
+  //: 最后一次**求值本身抛错**的原因。成功求值（哪怕结果为假）会把它清掉。
+  let lastError;
   while (Date.now() < deadline) {
     // 用 expr() 包一层：这样等待条件里也能用 byLabel() 这些辅助函数
-    last = await page.evaluate(expr("return (" + expression + ");"));
+    //
+    // ============================ 为什么这里必须 try ============================
+    // 求值会抛错，而**抛错不等于条件不满足**这一拍是坏事 —— 它是页面正在换文档。
+    // 实测踩到（列号反解定位到行 357 那句）：
+    //   `Page.navigate` 拆掉旧 document 之后、新 document 的 <body> 挂上之前，
+    //   若恰好在那一刻求值，`document.body` 是 `null` → TypeError。
+    // 这是**竞态**：连跑 4 次不复现，但在机器被压满时连续撞到两次。
+    //
+    // 轮询函数把"这一拍取不到"当成"还没满足"继续等，才是它该有的行为；
+    // 原来没有 try，于是**一次瞬时抖动终结整轮自检**，而且报错不说清是哪条。
+    // 注意这不放松任何断言：超时依旧抛错，只是错误里会带上"最后那次异常"。
+    try {
+      last = await page.evaluate(expr("return (" + expression + ");"));
+      lastError = undefined;
+    } catch (error) {
+      lastError = error;
+      await new Promise((r) => setTimeout(r, 150));
+      continue;
+    }
     if (last) return true;
     await new Promise((r) => setTimeout(r, 150));
   }
-  throw new Error("等待超时：" + label + "（最后结果=" + JSON.stringify(last) + "）");
+  throw new Error(
+    "等待超时：" +
+      label +
+      "（最后结果=" +
+      JSON.stringify(last) +
+      (lastError ? "；最后求值异常=" + String(lastError.message || lastError) : "") +
+      "）",
+  );
 }
 
 // React 受控组件必须走原生 setter，否则 onChange 收不到
@@ -508,6 +543,12 @@ async function main() {
 
   const failed = results.filter((ok) => !ok).length;
   console.log("\n共 " + results.length + " 项，失败 " + failed + " 项");
+  if (failures.length > 0) {
+    // 结尾**再列一遍失败项**：上面的 PASS 行已经把它们挤出屏幕了，
+    // 而回归入口只会报一句「有未通过项」—— 不列出来就只能靠重跑排查。
+    console.log("未通过：");
+    for (const name of failures) console.log("  ✗ " + name);
+  }
 
   // 本脚本会建 1 个品类（SELFCHECK-*）与 1 条配套预算，而这两样都**没有删除端点**
   // （删数据属于运维动作）。清理统一走一个脚本，与页面实测共用：
@@ -521,9 +562,14 @@ async function main() {
   return failed === 0 ? 0 : 1;
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error("自检中断：" + err.message);
-    process.exit(2);
-  });
+// 只在**直接运行**时跑：这样文件可以被 import 进来单测它的纯逻辑
+// （`waitFor` 的重试语义是"容错不能放松断言"，必须能对着假页面验）。
+// ⚠️ 没有这行守卫的话，任何 import 都会启动一整个无窗口 Edge 跑完 17 项检查。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error("自检中断：" + err.message);
+      process.exit(2);
+    });
+}

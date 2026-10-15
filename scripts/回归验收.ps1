@@ -13,7 +13,10 @@
       8) 浏览器自检            —— scripts\浏览器自检.mjs（无窗口 Edge + CDP，17 项）
       9) 知识库实测（M11）      —— scripts\m11-知识库实测.mjs（自起 Edge:9333，6 项）
      10) 窄屏自检（375×812）    —— scripts\窄屏自检.mjs（自起 Edge:9334，20 项）
-     11) 清理与残留回查        —— testdata_cleanup.py --scope all（残留非 0 就失败）
+     11) 知识库评测质量门禁     —— backend\scripts\knowledge_eval.py --gate
+                                   （27 条 Golden QA，比 Recall/MRR/回答率/拒答率硬门槛；
+                                     embedding 走本机 Ollama，见下方说明）
+     12) 清理与残留回查        —— testdata_cleanup.py --scope all（残留非 0 就失败）
 
   > **不在这个入口里的**：`scripts\m6-页面实测.mjs`（51 项，含 M10 全链路）。
   > 它的数据准备较长（建品类 + 预算 + 走完整条审批链），而且**需要外部已经开好的
@@ -122,18 +125,62 @@ if (-not (Test-Path $python)) {
 # ---------------------------------------------------------------- 1–8 步
 
 Invoke-Step "三条分层自查（应无任何输出）" {
+  # ============================ 为什么这段被重写了 ============================
+  # 原写法用的是 `-Path "$backendDir\app\**\*.py"`。**实测证明它不递归**：
+  # PowerShell 的 `-Path` 只把 `**` 当**一层**通配（不像 bash 的 globstar），
+  # 于是它只扫到 `app\*\*.py` 这一深度 ——
+  # 而 `app\infrastructure\records\knowledge.py`（深度 3）从来没被扫过。
+  #
+  # 后果很严重：**自查一直是假通过**，而"0 处命中"这个结论让人以为纪律被守住了。
+  # 实测证据：`chat_messages.top_score` 早就写了 `Mapped[float | None]`，
+  # 而自查一直报 0 命中。这与 Q70 记录的"回归入口假通过"是**同一类毛病** ——
+  # **验证工具本身坏了，而它坏的方式是说一切正常**。
+  #
+  # 所以这一步现在做三件事：① 真递归扫；② 口径收窄到"ORM 记录里的金额列"；
+  # ③ 末尾用探针**自证扫描器真的能抓到违约**。
+  $appDir = Join-Path $backendDir "app"
   $hits = @()
-  $hits += Select-String -Path (Join-Path $backendDir "app\domain\*.py") `
-    -Pattern "import (fastapi|sqlalchemy|redis|httpx|minio)"
-  $hits += Select-String -Path (Join-Path $backendDir "app\**\*.py") `
-    -Pattern "Mapped\[float\]|Float\("
-  $hits += Select-String -Path (Join-Path $backendDir "app\infrastructure\repositories\*.py") `
-    -Pattern "\.commit\(\)"
+
+  # ① domain 层不许 import 框架（递归扫，因为 domain 下可能再分子目录）
+  $hits += Get-ChildItem (Join-Path $appDir "domain") -Recurse -Filter *.py |
+    Select-String -Pattern "import (fastapi|sqlalchemy|redis|httpx|minio)"
+
+  # ② 不许有**浮点金额列**。口径收窄到"ORM 记录里的 Mapped[float" ——
+  #    原口径 `Float\(` 会把 `float()` 这个**内置函数调用**也算进来，
+  #    而领域层正当地用它处理**评分**（如 citation_support 的概率）。
+  #    ⚠️ 允许清单是**显式**的：评分类列（不是金额）逐个列出来，
+  #    新加一个必须来这里加一行 —— 这比"放宽正则"安全（放宽会漏掉真的金额列）。
+  $allowedFloatColumns = @("support_rate", "top_score")
+  $floatColumns = Get-ChildItem (Join-Path $appDir "infrastructure\records") -Recurse -Filter *.py |
+    Select-String -Pattern "^\s*(\w+):\s*Mapped\[float" |
+    Where-Object { $name = ($_.Line -split ":")[0].Trim(); $name -notin $allowedFloatColumns }
+  $hits += $floatColumns
+
+  # ③ 仓库层不许 commit（递归扫）
+  $hits += Get-ChildItem (Join-Path $appDir "infrastructure\repositories") -Recurse -Filter *.py |
+    Select-String -Pattern "\.commit\(\)"
+
   if ($hits.Count -gt 0) {
     $hits | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }
     throw "分层纪律被破坏：上面这些命中必须为 0"
   }
-  "三条自查合计命中 0 处"
+
+  # ④ **自证**：造一个必然违约的探针，确认扫描器真的抓得到。
+  #    没有这一步的话，"0 命中"可能只是"什么都没扫到" —— 而上面那条 bug 正是如此。
+  $probe = Join-Path $backendDir "app\infrastructure\records\__probe_violation.py"
+  try {
+    Set-Content -Path $probe -Value "class Probe:`n    amount_fen: Mapped[float] = None`n" -Encoding UTF8
+    $probeHits = Get-ChildItem (Join-Path $appDir "infrastructure\records") -Recurse -Filter *.py |
+      Select-String -Pattern "^\s*(\w+):\s*Mapped\[float" |
+      Where-Object { $name = ($_.Line -split ":")[0].Trim(); $name -notin $allowedFloatColumns }
+    if ($probeHits.Count -eq 0) {
+      throw "自查扫描器失效：探针违约文件没被抓到（说明这次 0 命中不可信）"
+    }
+  } finally {
+    Remove-Item $probe -Force -ErrorAction SilentlyContinue
+  }
+
+  "三条自查合计命中 0 处（扫描器自证通过：探针违约能被抓到）"
 }
 
 Invoke-Step "后端全量测试 pytest -m `"`"（unit + integration）" {
@@ -189,7 +236,7 @@ Invoke-Step "真实服务冒烟 m6_smoke.py（19 项，跑完自清理）" {
   if ($LASTEXITCODE -ne 0) { throw "冒烟有未通过项" }
 } $backendDir
 
-Invoke-Step "静默失败与接缝探针 regression_probes.py（14 项，跑完自清理）" {
+Invoke-Step "静默失败与接缝探针 regression_probes.py（20 项，跑完自清理）" {
   $env:PYTHONUTF8 = "1"
   & $python "scripts\regression_probes.py"
   if ($LASTEXITCODE -ne 0) { throw "探针有未通过项" }
@@ -214,6 +261,30 @@ Invoke-Step "窄屏自检 窄屏自检.mjs（20 项，375×812）" {
   node "scripts\窄屏自检.mjs"
   if ($LASTEXITCODE -ne 0) { throw "窄屏自检有未通过项" }
 }
+
+# 知识库评测质量门禁（M11 增强）：跑 27 条 Golden QA，比硬门槛。
+#
+# **为什么这一步重要**：它是"AI 功能好不好"第一次有了**可回归的量化判据**——
+# 之前改 prompt、改切分、换 embedding 都只能凭感觉说"好像更好了"。
+# 门槛阈值写在 `backend\scripts\knowledge_eval.py` 的 `GATES` 里（含"为什么定得松"的说明）。
+#
+# ⚠️ **它依赖本机 Ollama**：默认 embedding 是真模型 `quentinz/bge-small-zh-v1.5`，
+# 走 `http://127.0.0.1:11434/api/embed`。启动方式：`.\scripts\ollama.ps1 -Serve`。
+# 服务不在时这一步会**明确报 embedding 调用失败**，而不是悄悄退回哈希 ——
+# 那会让指标看起来正常、实则测的是另一套向量空间（见 `infrastructure/embeddings.py`）。
+#
+# 想在没有 Ollama 的机器上跑：给这一步加 `--embedding local`，
+# 但那时 `grounded_rate` / `refusal_rate` 会掉到哈希的水平（0.864 / 0.60），
+# 门槛要跟着放宽 —— 见 `docs/AI-评测baseline.md` 的两套数字对比。
+#
+# 放在"清理"之前：它造的 `EVAL-` 制度文档正好由下一步收掉。
+Invoke-Step "知识库评测质量门禁（27 条 Golden QA，embedding 走 Ollama）" {
+  $env:PYTHONUTF8 = "1"
+  # `--quiet`：关掉应用的每请求日志。不关的话报告会被几十行 INFO 淹掉，
+  # 而失败时回归入口只打尾部输出 —— 那就看不到**到底哪个指标没过门槛**。
+  & $python "scripts\knowledge_eval.py" --gate --quiet
+  if ($LASTEXITCODE -ne 0) { throw "知识库评测未过质量门禁" }
+} $backendDir
 
 Invoke-Step "测试数据清理与残留回查（testdata_cleanup.py --scope all）" {
   $env:PYTHONUTF8 = "1"
