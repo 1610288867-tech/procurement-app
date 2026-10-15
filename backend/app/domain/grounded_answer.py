@@ -170,6 +170,23 @@ def has_confident_grounding(
     return max(source.score for source in sources) >= strong_score
 
 
+#: 第一层校验（引用完整性）里"与来源相关"的两条问题消息。
+#:
+#: **提成常量是因为它们会被别处读**：`KnowledgeCoordinator._finish` 在
+#: **Agent 型回答**上要把这两条筛掉（Agent 查的是业务数据，那种回答本来就没有制度引用，
+#: 给它套这条规则会得到一个假问题 + 一句**误导性**的"请以制度原文为准"）。
+#:
+#: ⚠️ 之前那里写的是**字符串字面量**，而我只抄了其中一个（"没有任何引用编号"）——
+#: 于是另一条（"没有引用任何来源"）照样贴在业务数据的回答后面。
+#: 症状是"看着改了、行为没变"，属于**同一份事实存了两个字面量**的典型后果。
+PROBLEM_NO_CITATION = "回答包含实质内容但没有任何引用编号"
+PROBLEM_SOURCES_UNUSED = "检索到了制度片段，但回答没有引用任何来源"
+
+#: 上面两条里，**在 Agent 型回答上属于假问题**的那两条。
+#: 第三条（引用了不存在的编号）**任何情况下都要保留** —— 那是真违规。
+AGENT_IRRELEVANT_PROBLEMS = (PROBLEM_NO_CITATION, PROBLEM_SOURCES_UNUSED)
+
+
 def check_citation_integrity(answer: str, sources: list[Source]) -> list[str]:
     """校验回答里的引用是否可信。返回**问题列表**（空 = 通过）。
 
@@ -201,9 +218,9 @@ def check_citation_integrity(answer: str, sources: list[Source]) -> list[str]:
             f"回答引用了不存在的来源编号：{sorted(cited - valid)}（可用编号 {sorted(valid)}）"
         )
     if not cited and len(answer.strip()) > SUBSTANTIVE_LENGTH:
-        problems.append("回答包含实质内容但没有任何引用编号")
+        problems.append(PROBLEM_NO_CITATION)
     if sources and not cited:
-        problems.append("检索到了制度片段，但回答没有引用任何来源")
+        problems.append(PROBLEM_SOURCES_UNUSED)
     return problems
 
 

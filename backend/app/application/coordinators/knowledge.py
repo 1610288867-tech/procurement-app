@@ -73,6 +73,7 @@ from app.domain.citation_support import (
 from app.domain.cost import ModelPrice, estimate_cost_micros
 from app.domain.embedding import VECTOR_DIM
 from app.domain.grounded_answer import (
+    AGENT_IRRELEVANT_PROBLEMS,
     CITATION_WARNING,
     SYSTEM_PROMPT,
     Source,
@@ -1549,8 +1550,26 @@ class KnowledgeCoordinator:
         went_through_tools = (
             agent_used if agent_used is not None else agent_used_tools(agent_steps)
         )
-        if went_through_tools:
-            problems = [item for item in problems if "没有任何引用编号" not in item]
+        if went_through_tools or agent_run_id:
+            # ============================ 为什么 `agent_run_id` 也算 ============================
+            # 实测（7B，2026-10-15）撞到：Agent **确实跑了**（有 run_id）、
+            # 回答里给出了真实的单号/金额/状态，但**这一次没有调工具**
+            # （它从上下文里拿到了结果）—— 于是 `went_through_tools` 是 False，
+            # `check_citation_integrity` 的第 2 条（"有实质内容却没有任何引用编号"）
+            # 生效，在**业务数据回答**末尾贴上一句
+            # 「来源校验未通过，请以制度原文为准」。
+            #
+            # 那句话是**误导**：用户问的是"我提过哪些申请"，
+            # 而系统在让他去翻制度原文 —— 与他问的事毫无关系。
+            #
+            # 所以判据改成"**这次回答是不是 Agent 路径产出的**"（有没有 run_id），
+            # 而不是"有没有调工具"：走 Agent 就说明它不是在一次制度问答里作断言。
+            # 弱依据回落那条路**不会**被误伤 —— 它用 `agent_used=False` 走
+            # `_answer_from_policy`，产出的是**基于制度片段**的回答，
+            # 那时"必须有引用"这条规则是**对的**，不该抑制。
+            problems = [
+                item for item in problems if item not in AGENT_IRRELEVANT_PROBLEMS
+            ]
 
         # 提示语只有一个来源（`CITATION_WARNING`）—— 两层问题合并后只追加一次，
         # 避免回答末尾出现两行几乎一样的免责声明（那会让提示贬值成噪音）。
@@ -1593,6 +1612,11 @@ class KnowledgeCoordinator:
                 [self._support_payload(problem) for problem in support_problems],
                 agent_steps=agent_steps,
                 agent_stop_reason=agent_stop_reason,
+                # ⚠️ **必须传**：第一版给 `_merge_details` 加了参数却漏了这一处，
+                # 于是落库的 `run_id` 一直是 `null` —— 而**抑制误导提示的判据
+                # 用的正是它**（见下面 `went_through_tools or agent_run_id`）。
+                # 症状是"代码看着改对了、行为没变"，属于签名与调用点不同步的典型形态。
+                agent_run_id=agent_run_id,
             ),
             support_rate=rate,
             top_score=top_score,
