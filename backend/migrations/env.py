@@ -17,6 +17,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
+from app.infrastructure.records import agent_run as _agent_run  # noqa: F401  autogenerate
 from app.infrastructure.records import approval as _approval  # noqa: F401  autogenerate
 from app.infrastructure.records import attachment as _attachment  # noqa: F401  autogenerate
 from app.infrastructure.records import auth as _auth  # noqa: F401  autogenerate

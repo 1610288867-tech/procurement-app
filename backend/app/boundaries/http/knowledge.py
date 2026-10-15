@@ -172,6 +172,10 @@ class AskIn(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     #: 不传就新建一个会话
     session_id: uuid.UUID | None = None
+    #: **续跑一次中断的 Agent 运行**（M12++）。传了 `done` 事件里那个
+    #: `agent_run_id`，已经跑过的工具步骤会**复用记录、不重新执行**。
+    #: 不传就是一次全新运行。
+    run_id: uuid.UUID | None = None
 
 
 class SupportProblemOut(BaseModel):
@@ -222,6 +226,13 @@ class AskOut(BaseModel):
     #: 不给原因就没法归因（是超时？还是工具一直失败？）。
     agent_rounds: int | None = None
     agent_stop_reason: str | None = None
+    #: **这次 Agent 运行的 id**（M12++）。客户端拿它在中断后
+    #: 用 `POST /api/v1/chat {run_id}` 续跑 —— 已跑过的工具步骤会复用记录、
+    #: 不重新执行（判据见 `domain/agent_run.should_reuse`）。
+    agent_run_id: str | None = None
+    #: 这次**复用了多少步**已记录的结果（0 = 全新执行）。
+    #: 要暴露出来：续跑到底有没有生效，判据就是它非零。
+    agent_reused_steps: int = 0
 
 
 class SessionOut(BaseModel):
@@ -343,12 +354,12 @@ async def ask(
         raise _quota_error(reason)
 
     coordinator = knowledge_coordinator(session)
-    body = await coordinator.ask(
-        user_id=user.id,
+    body = await coordinator.ask(        user_id=user.id,
         question=payload.question,
         session_id=payload.session_id,
         # 把已登录用户交下去 —— 它是**工具调用的权限来源**（见 `application/tools.py`）
         actor=user,
+        run_id=payload.run_id,
     )
     _charge_quota(user, body, question=payload.question, now=now)
     return AskOut.model_validate(body)
@@ -401,6 +412,8 @@ async def ask_stream(
         session_id=payload.session_id,
         # 同上：身份交下去，工具才有权限来源
         actor=user,
+        # 续跑：传了 `run_id` 就复用已记录的步骤（见 `AskIn.run_id`）
+        run_id=payload.run_id,
     )
     return StreamingResponse(
         _sse(_charge_quota_stream(events, user=user, question=payload.question, now=now)),

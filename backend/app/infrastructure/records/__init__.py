@@ -13,6 +13,7 @@
     invoice.py    供应商发票（M10 / 8.3）
     payment.py    付款单（M10 / 8.4）
     knowledge.py  制度文档 / 片段 / 会话 / 消息（M11）
+    agent_run.py  Agent 运行记录（M12++，支撑断点续跑）
 
 新模型必须让 `migrations/env.py` 能 import 到，否则 Alembic autogenerate
 看不到它，会生成一个空迁移。

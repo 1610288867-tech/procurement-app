@@ -51,14 +51,43 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.database import SessionFactory
-from app.domain.chunking import chunk_text
+from app.domain.chunking import chunk_text, normalize_text
+from app.infrastructure.embeddings import LocalHashEmbedding, OllamaEmbedding
 from app.infrastructure.records.auth import UserRecord
 from app.infrastructure.records.knowledge import (
     KnowledgeChunkRecord,
     KnowledgeDocRecord,
 )
-from app.boundaries.http.knowledge import _embedder
+
+
+def build_embedder() -> LocalHashEmbedding | OllamaEmbedding:
+    """按配置造一个 embedding 实现。
+
+    ============================ 为什么不复用边界层那个工厂 ============================
+    `boundaries/http/knowledge.py` 里有一个 `_embedder()`，语义与这里**完全一样**。
+    但脚本去 import 边界层等于把依赖方向反过来用 ——
+    分层规则（`AGENTS.md` 第五章第 1 条与 `PROJECT_INDEX.md` 第四节）说
+    边界层是最外圈，它依赖里层；里层与工具不该依赖它。
+
+    宁可在这里写十行重复代码，也不要让一条**架构例外**留下：
+    例外一旦存在，下一次"反正已经破过一次"就会更容易。
+
+    ⚠️ 这里**同样没有"失败了退回哈希"的分支**（与边界层同一个理由）：
+    哈希与真模型的向量**不可比**，而检索是按 `embedding_model` 名字过滤的 ——
+    退回哈希会让真模型建的文档**一条都检索不到**。
+    """
+    settings = get_settings()
+    provider = (settings.knowledge_embedding_provider or "").strip().lower()
+    if provider == "local":
+        return LocalHashEmbedding()
+    if provider == "ollama":
+        return OllamaEmbedding(
+            base_url=settings.knowledge_embedding_base_url,
+            model=settings.knowledge_embedding_model,
+        )
+    raise SystemExit(f"未知的 embedding 提供方：{provider!r}（可用值：local / ollama）")
 
 #: 种子的 source_key 前缀。**刻意不是 `EVAL-`** ——
 #: 那个前缀是评测集的，`knowledge_eval.py` 与 `testdata_cleanup.py` 都会清掉它。
@@ -435,7 +464,7 @@ DOCUMENTS: list[tuple[str, str, int, datetime, str]] = [
 
 
 async def seed_knowledge() -> None:
-    embedder = _embedder()
+    embedder = build_embedder()
     print(f"embedding：{embedder.name}（维度 {embedder.dim}）")
 
     created: list[str] = []
@@ -466,7 +495,7 @@ async def seed_knowledge() -> None:
                 skipped.append(f"{title} v{version}")
                 continue
 
-            chunks = chunk_text(text)
+            chunks = chunk_text(normalize_text(text))
             if not chunks:
                 raise SystemExit(f"《{title}》切分后没有任何片段 —— 正文可能全是空白")
 

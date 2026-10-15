@@ -40,16 +40,21 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError
+
+if TYPE_CHECKING:  # 只在类型检查时导入：运行时不希望 application 依赖 SQLAlchemy 的具体类型
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.agent import AgentStep, run_agent
 from app.application.coordinators.approval import ApprovalCoordinator
 from app.application.coordinators.auth import Principal
 from app.application.coordinators.purchase import PurchaseCoordinator
 from app.application.ports import (
+    ChatMessage,
     ChatModelPort,
     EmbeddingPort,
     ModelUsage,
@@ -57,6 +62,8 @@ from app.application.ports import (
     UnitOfWork,
 )
 from app.application.tools import agent_used_tools
+from app.database import SessionFactory
+from app.domain.agent_run import RESUMABLE_STATUSES, RUN_FINISHED
 from app.domain.chunking import chunk_text, normalize_text
 from app.domain.citation_support import (
     SupportProblem,
@@ -88,6 +95,7 @@ def _merge_details(
     *,
     agent_steps: list[dict[str, Any]] | None,
     agent_stop_reason: str | None,
+    agent_run_id: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """把"引用支撑性问题"与"Agent 执行轨迹"合并进同一个 JSONB 列。
 
@@ -112,6 +120,9 @@ def _merge_details(
                 "sentence_index": None,
                 "steps": agent_steps,
                 "stop_reason": agent_stop_reason,
+                #: 这次运行的 id（M12++）。有了它，这条回答就能追溯到
+                #: `agent_runs` 里那次运行 —— 中断过、续跑过都查得到。
+                "run_id": agent_run_id,
             }
         )
     return merged or None
@@ -165,6 +176,163 @@ def _infer_content_type(filename: str | None) -> str | None:
 
 
 class KnowledgeCoordinator:
+    @asynccontextmanager
+    async def _agent_run(
+        self,
+        *,
+        session_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        question: str,
+        run_id: uuid.UUID | None,
+    ) -> AsyncIterator[tuple[uuid.UUID, list[dict[str, Any]], Any]]:
+        """一次 Agent 运行的**生命周期**：开 → （跑）→ 结束或标中断。
+
+        产出 `(run_id, 已记录的轨迹, checkpoint 回调)`。
+
+        ============================ 为什么用**请求那个会话**，而不是自己开一个 ============================
+        第一版用的是独立会话（`SessionFactory()`），理由听起来很正当：
+        "断点要真落盘，就得 commit，而请求会话里可能压着别的东西"。
+
+        实测撞到了它的**致命前提**：独立会话**看不到请求会话里尚未提交的行**。
+        `agent_runs.session_id` 外键指向 `chat_sessions`，而那个会话行是
+        `_prepare` 在**请求会话里刚建、还没提交**的 →
+        独立会话插入时外键直接违约（`ForeignKeyViolation`）。
+        在集成测试的夹具（外层事务 + savepoint）里 100% 复现。
+
+        更根本的是：**一次请求里的东西本来就该在同一个事务边界内**。
+        "断点"要的是"每一步之后让状态对后来者可见"，而那不需要另一个会话 ——
+        只需要**提交**。用请求会话提交，语义反而更正确：
+        已经跑过的步骤与它引用的会话、消息一起可见，不会出现
+        "运行记录说存在、它引用的会话却还没提交"这种半截状态。
+
+        代价要说清：这里的 `commit()` 会把请求会话里**已积压的东西一起提交**
+        （例如 `_prepare` 追加的那条用户消息）。这可以接受，因为那些都是
+        **只追加**的写入（消息、运行记录），没有"回滚它们才有意义"的语义。
+
+        ============================ 三种退出，三种状态 ============================
+            正常跑完                    → `FINISHED`
+            调用方自己出错               → `FAILED`
+            生成器被提前关闭（SSE 断开） → `INTERRUPTED`（**可续跑**）
+
+        ⚠️ **"进程被杀"这一支这里接不住**（没有任何代码会执行）。
+        它的兜底是**下一次请求**触发的 `sweep_stale_running`：
+        把卡住的 `RUNNING` 按时间判成 `INTERRUPTED`。两者合起来才闭环。
+        """
+        # 顺手把卡住的 RUNNING 判成 INTERRUPTED —— 被杀的进程不会自己写库，
+        # 只能由后来者按时间判定。必须**发生在开始新的运行之前**。
+        swept = await self._run_repo.sweep_stale_running()
+        if swept:
+            await self._uow.commit()
+            logger.info("把 %d 次卡住的 Agent 运行标成中断", swept)
+
+        # ============================ `run_id` 是"续跑键"，不是"指定新建 id"的键 ============================
+        # 第一版把 `run_id` 直接拿去 `start()`（= INSERT 一个指定 id 的行）——
+        # 而续跑时那一行**本来就在库里**，于是主键冲突 →
+        # 被全局异常处理器翻成 503「数据库暂不可用」（实测撞到，指错方向）。
+        #
+        # 正确语义：传了 `run_id` 就是**接着那一次跑**，所以先加载它、校验它。
+        # 也让"传一个不存在的 id"变成明确的 404 而不是 500。
+        if run_id is not None:
+            existing = await self._run_repo.get(run_id)
+            if existing is None:
+                raise NotFoundError(f"这次 Agent 运行不存在：{run_id}")
+            if existing.actor_id != actor_id:
+                # 别人的运行不能被你接着跑（与"别人的会话一律 404"同一个口径：
+                # 不告诉它存在）。**这一条是权限边界**，不是体验优化。
+                raise NotFoundError(f"这次 Agent 运行不存在：{run_id}")
+            if existing.status not in RESUMABLE_STATUSES:
+                raise ConflictError(
+                    f"这次运行的状态是 {existing.status}，不能续跑"
+                    "（只有中断的运行可以续跑）"
+                )
+            run = existing
+            recorded: list[dict[str, Any]] = list(run.trace or [])
+            # 让"正在续跑"这件事立刻可见：别的请求不会再把它当成可续跑的。
+            await self._run_repo.mark_running(run_id=run.id)
+            await self._uow.commit()
+        else:
+            run = await self._run_repo.start(
+                session_id=session_id,
+                actor_id=actor_id,
+                question=question,
+            )
+            # **一开始就提交**：后面若在第一步之前就被杀掉，这次运行至少是可见的
+            # （否则它连"存在过"都没留下，续跑无从谈起）。
+            await self._uow.commit()
+            recorded = []
+
+        async def checkpoint(trace: list[dict[str, Any]]) -> None:
+            """每步之后落盘。**这就是"断点"的全部实现。**"""
+            await self._run_repo.save_trace(run_id=run.id, trace=trace)
+            await self._uow.commit()
+
+        try:
+            yield run.id, recorded, checkpoint
+        except GeneratorExit:
+            # 客户端断开（SSE 生成器被关闭）：这是**可续跑**的中断。
+            # ⚠️ 这里**不能 yield**（生成器正在关闭），只能用同步的收尾路径；
+            # 而 `commit` 是异步的 —— 所以退回"不写状态"，
+            # 让 `sweep_stale_running` 在下次请求时把它判成 INTERRUPTED。
+            # 少一次精确标记，换来的是不会在关闭过程中抛二次异常。
+            logger.info("Agent 运行 %s 的客户端断开，留给 sweep 判定中断", run.id)
+            raise
+        except BaseException as exc:  # noqa: BLE001 - 要如实归类后重新抛出
+            await self._run_repo.mark_failed(run_id=run.id, reason=type(exc).__name__)
+            await self._uow.commit()
+            raise
+
+    async def _finish_run(
+        self,
+        *,
+        run_id: uuid.UUID,
+        answer: str,
+        stop_reason: str,
+    ) -> None:
+        """把这次运行标成 `FINISHED` 并留下最终回答。
+
+        **不传轨迹**：完整轨迹由 `checkpoint`（每步一次 `save_trace`）负责，
+        这里只改状态与回答。第一版在这里用**给界面看的精简 steps** 覆盖了轨迹，
+        把 `call_id` / `arguments` 抹掉了 —— 于是续跑失效（实测撞到）。
+
+        **用请求那个会话**：与 `_agent_run` 同一个理由（见那里的说明）。
+        """
+        await self._run_repo.finish(
+            run_id=run_id,
+            status=RUN_FINISHED,
+            answer=answer,
+            stop_reason=stop_reason,
+        )
+        await self._uow.commit()
+
+    async def _recent_history(self, *, session_id: uuid.UUID, limit: int = 6) -> list[ChatMessage]:
+        """取同一会话里最近几条消息，当作**短期记忆**喂给 Agent。
+
+        ⚠️ 这是本次改动**顺手补上的一个真缺口**：`run_agent` 的 `history`
+        参数一直存在、却**从来没人传过** —— 于是 Agent 连"那第 2 张单子呢"
+        这种追问都接不上（而 `chat_messages` 表与 `list_messages` 本来就有）。
+
+        `limit` 数的是**消息条数**（一问一答算两条），除 2 才是"几轮对话"。
+        取 6 = 最近 3 轮：再多会让上下文变长，而 Agent 的轮次上限本来就只有 4 ——
+        把 token 花在更早的对话上不划算。
+
+        工具调用与结果**不在这里**（它们在 `agent_runs.trace`），
+        所以重建不出完整的工具上下文；但"上一句问了什么、答了什么"
+        已经足够让追问接上，也不会误导模型以为工具结果还在。
+        """
+        rows = await self._knowledge.list_messages(session_id)
+        history: list[ChatMessage] = []
+        for record in rows[-limit:]:
+            role = "assistant" if record.role == "ASSISTANT" else "user"
+            content = (record.content or "").strip()
+            if content:
+                history.append(ChatMessage(role=role, content=content))
+        # 最后一条是**这次刚追加进去的问题**（`_prepare` 里写的）——
+        # 它会由 `run_agent` 自己再作为 `user` 消息加一次，留着就重复了。
+        # 重复的问题会让模型以为用户问了两遍。
+        if history and history[-1].role == "user":
+            history.pop()
+        return history
+
     def __init__(
         self,
         *,
@@ -178,6 +346,7 @@ class KnowledgeCoordinator:
         price_config: str = "",
         purchase: PurchaseCoordinator | None = None,
         approval: ApprovalCoordinator | None = None,
+        session: AsyncSession | None = None,
     ) -> None:
         self._knowledge = knowledge
         self._store = object_store
@@ -198,6 +367,14 @@ class KnowledgeCoordinator:
         #: 这个默认值让"加了 Agent"这件事可以被逐层接上，而不是一次性改完所有装配点。
         self._purchase = purchase
         self._approval = approval
+        #: Agent 运行记录（M12++）。**用请求那个会话** —— `agent_runs.session_id`
+        #: 外键指向 `chat_sessions`，而那个会话行是 `_prepare` 在同一次请求里
+        #: 刚建、还没提交的；独立会话看不到它，插入会直接外键违约（实测撞到过，
+        #: 见 `_agent_run` 的说明）。传 `None` 时才退回自己开会话 ——
+        #: 那条路只在"没有请求会话"的离线脚本里成立。
+        from app.infrastructure.repositories.agent_run_repo import AgentRunRepository
+
+        self._run_repo = AgentRunRepository(session or SessionFactory())
 
     # ------------------------------------------------------------------ 文档入库
 
@@ -445,6 +622,7 @@ class KnowledgeCoordinator:
         question: str,
         session_id: uuid.UUID | None,
         actor: Principal | None = None,
+        run_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         """非流式提问：把整段回答拼好再返回（给 curl / 测试用）。
 
@@ -466,9 +644,14 @@ class KnowledgeCoordinator:
         model_started = time.perf_counter()
 
         if self._should_use_agent(prepared):
-            answer, steps, usage, stop_reason = await self._collect_agent(
-                prepared, question=question
-            )
+            (
+                answer,
+                steps,
+                usage,
+                stop_reason,
+                run_id_used,
+                reused_steps,
+            ) = await self._collect_agent(prepared, question=question, run_id=run_id)
             model_ms = int((time.perf_counter() - model_started) * 1000)
             return await self._finish(
                 prepared,
@@ -477,6 +660,8 @@ class KnowledgeCoordinator:
                 usage=usage,
                 agent_steps=steps,
                 agent_stop_reason=stop_reason,
+                agent_run_id=str(run_id_used) if run_id_used else None,
+                reused_steps=reused_steps,
             )
 
         if not prepared["decision"].use_model:
@@ -550,6 +735,7 @@ class KnowledgeCoordinator:
         question: str,
         session_id: uuid.UUID | None,
         actor: Principal | None = None,
+        run_id: uuid.UUID | None = None,
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """流式提问：产出 `(事件名, 数据)`，由边界层翻成 SSE。
 
@@ -633,7 +819,10 @@ class KnowledgeCoordinator:
         # 这句话在代码里看起来不成立）。
         if will_use_agent:
             async for event in self._answer_with_agent(
-                prepared, question=question, model_started=model_started
+                prepared,
+                question=question,
+                model_started=model_started,
+                run_id=run_id,
             ):
                 yield event
             return
@@ -823,6 +1012,7 @@ class KnowledgeCoordinator:
         *,
         question: str,
         model_started: float,
+        run_id: uuid.UUID | None = None,
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """走 Agent：让模型自己决定调哪些工具，再把结果拼成回答。
 
@@ -834,41 +1024,74 @@ class KnowledgeCoordinator:
            而"转圈 20 秒然后一次性给答案"会让人以为卡住了；
         ③ **引用校验照旧跑**：Agent 的回答可能引用制度片段（它没有检索结果，
            但可能凭记忆说起制度），所以 `_finish` 的两层校验**一次都不能少**。
+
+        ============================ M12++：先发 run_id，再跑 ============================
+        第一个 SSE 事件是 `step`，但我们在跑之前就知道 `run_id` 了 ——
+        所以把它放进**最早的** `step` 事件的一个字段里不合适（`step` 的形状是固定的）。
+        改成：`run_id` 随 `done` 事件回去（那是权威值），
+        而**前端要续跑时是自己带 `run_id` 进来的**（`POST /chat {run_id}`），
+        所以它不需要从流里拿 —— 流里回传只是为了排障与前端显示。
         """
         assert self._purchase is not None and self._approval is not None  # noqa: S101
         actor = await self._principal_for(prepared)
+        session = prepared["session"]
 
         pieces: list[str] = []
         steps: list[dict[str, Any]] = []
         usage: ModelUsage | None = None
         stop_reason = "answered"
         rounds = 0
+        reused = 0
+        actual_run_id = run_id
 
-        async for item in run_agent(
+        async with self._agent_run(
+            session_id=session.id,
+            actor_id=actor.id,
             question=question,
-            actor=actor,
-            chat_model=self._chat,
-            purchase=self._purchase,
-            approval=self._approval,
-        ):
-            if isinstance(item, AgentStep):
-                steps.append(
-                    {
-                        "round": item.round_no,
-                        "kind": item.kind,
-                        "detail": item.detail,
-                        "tool": item.call.name if item.call else None,
-                    }
-                )
-                # 实时推给前端。`tool_call` 与 `tool_result` 分开是两个有用的信号：
-                # "正在查"与"查到了"—— 后者才是用户等的那一下。
-                yield "step", steps[-1]
-                continue
-            # AgentResult
-            pieces.append(item.answer)
-            usage = item.usage
-            stop_reason = item.stop_reason
-            rounds = item.rounds
+            run_id=run_id,
+        ) as (this_run_id, resume_from, checkpoint):
+            actual_run_id = this_run_id
+            # 短期记忆：同一会话里最近几轮（见 `_recent_history` 的说明）
+            history = await self._recent_history(session_id=session.id)
+
+            async for item in run_agent(
+                question=question,
+                actor=actor,
+                chat_model=self._chat,
+                purchase=self._purchase,
+                approval=self._approval,
+                history=history,
+                resume_from=resume_from,
+                on_step=checkpoint,
+            ):
+                if isinstance(item, AgentStep):
+                    steps.append(
+                        {
+                            "round": item.round_no,
+                            "kind": item.kind,
+                            "detail": item.detail,
+                            "tool": item.call.name if item.call else None,
+                        }
+                    )
+                    # 实时推给前端。`tool_call` 与 `tool_result` 分开是两个有用的信号：
+                    # "正在查"与"查到了"—— 后者才是用户等的那一下。
+                    yield "step", steps[-1]
+                    continue
+                # AgentResult
+                pieces.append(item.answer)
+                usage = item.usage
+                stop_reason = item.stop_reason
+                rounds = item.rounds
+                reused = item.reused_steps
+
+            # 跑到这里说明循环正常结束（没有异常、生成器没被关）→ 记为 FINISHED。
+            # 用 `RUN_FINISHED` 而不是"删掉这次运行"：**修完的记录本身是证据**
+            # （"它跑过、跑到哪、怎么停的"），也是前端列出历史的来源。
+            await self._finish_run(
+                run_id=this_run_id,
+                answer="".join(pieces),
+                stop_reason=stop_reason,
+            )
 
         # ============================ 一个工具都没调 → 退回确定性话术（实测踩到）============================
         # **模型没有查制度的工具**（4 个工具全是业务数据类），所以"制度里有没有这条规定"
@@ -900,8 +1123,15 @@ class KnowledgeCoordinator:
                 usage=usage,
                 agent_steps=steps,
                 agent_stop_reason=stop_reason,
+                agent_run_id=str(actual_run_id) if actual_run_id else None,
             )
-            yield "done", self._done_payload(result, rounds=rounds, stop_reason=stop_reason)
+            yield "done", self._done_payload(
+                result,
+                rounds=rounds,
+                stop_reason=stop_reason,
+                run_id=actual_run_id,
+                reused_steps=reused,
+            )
             return
 
         answer = "".join(pieces)
@@ -915,12 +1145,24 @@ class KnowledgeCoordinator:
             usage=usage,
             agent_steps=steps,
             agent_stop_reason=stop_reason,
+            agent_run_id=str(actual_run_id) if actual_run_id else None,
         )
-        yield "done", self._done_payload(result, rounds=rounds, stop_reason=stop_reason)
+        yield "done", self._done_payload(
+            result,
+            rounds=rounds,
+            stop_reason=stop_reason,
+            run_id=actual_run_id,
+            reused_steps=reused,
+        )
 
     @staticmethod
     def _done_payload(
-        result: dict[str, Any], *, rounds: int, stop_reason: str
+        result: dict[str, Any],
+        *,
+        rounds: int,
+        stop_reason: str,
+        run_id: uuid.UUID | None = None,
+        reused_steps: int = 0,
     ) -> dict[str, Any]:
         """Agent 两条出口（用到工具 / 没用工具）**共用的 `done` 事件体**。
 
@@ -942,6 +1184,13 @@ class KnowledgeCoordinator:
             "used_model": result["used_model"],
             #: 为什么没调用模型 —— 同样以 `done` 为准（与 `used_model` 配对）
             "reason": result["reason"],
+            #: **这次 Agent 运行的 id**（M12++）。前端拿它在中断后用
+            #: `POST /chat {run_id}` 续跑 —— 续跑时已跑过的步骤不会重新执行。
+            "agent_run_id": str(run_id) if run_id else None,
+            #: 这次**复用了多少步**已记录的结果（0 = 全新执行）。
+            #: 要发出去：续跑到底有没有生效，判据就是它非零 ——
+            #: 否则"续跑"这件事只能靠日志猜。
+            "agent_reused_steps": reused_steps,
             # Agent 专属信息：轮次与停止原因。**要发出去** ——
             # 它是"这次为什么停了"的唯一线索（超时？轮次用完？工具一直失败？），
             # 而这些情况的用户体感都是"没答好"，不给原因就没法归因。
@@ -950,45 +1199,71 @@ class KnowledgeCoordinator:
         }
 
     async def _collect_agent(
-        self, prepared: dict[str, Any], *, question: str
-    ) -> tuple[str, list[dict[str, Any]], ModelUsage | None, str]:
+        self, prepared: dict[str, Any], *, question: str, run_id: uuid.UUID | None = None
+    ) -> tuple[str, list[dict[str, Any]], ModelUsage | None, str, uuid.UUID | None, int]:
         """非流式地把 Agent 跑完（`ask` 用它；`ask_stream` 那条路要逐步推给前端）。
 
-        返回 `(answer, steps, usage, stop_reason)`。
+        返回 `(answer, steps, usage, stop_reason, run_id)`。
+        `run_id` 要回给边界层：非流式响应里带上它，客户端才能在中断后用同一个 id 续跑。
+
+        ⚠️ **断点在这里必须真的落盘**：非流式没有 SSE 可断，
+        但进程一样会在半路被杀 —— 所以同样走 `_agent_run` 生命周期
+        （独立的检查点会话 + 每步 commit）。
         """
         assert self._purchase is not None and self._approval is not None  # noqa: S101
         actor = await self._principal_for(prepared)
+        session = prepared["session"]
 
         pieces: list[str] = []
         steps: list[dict[str, Any]] = []
         usage: ModelUsage | None = None
         stop_reason = "answered"
+        actual_run_id: uuid.UUID | None = run_id
+        reused_steps = 0
 
-        async for item in run_agent(
+        async with self._agent_run(
+            session_id=session.id,
+            actor_id=actor.id,
             question=question,
-            actor=actor,
-            chat_model=self._chat,
-            purchase=self._purchase,
-            approval=self._approval,
-        ):
-            if isinstance(item, AgentStep):
-                steps.append(
-                    {
-                        "round": item.round_no,
-                        "kind": item.kind,
-                        "detail": item.detail,
-                        "tool": item.call.name if item.call else None,
-                    }
-                )
-                continue
-            pieces.append(item.answer)
-            usage = item.usage
-            stop_reason = item.stop_reason
+            run_id=run_id,
+        ) as (this_run_id, resume_from, checkpoint):
+            actual_run_id = this_run_id
+            history = await self._recent_history(session_id=session.id)
+
+            async for item in run_agent(
+                question=question,
+                actor=actor,
+                chat_model=self._chat,
+                purchase=self._purchase,
+                approval=self._approval,
+                history=history,
+                resume_from=resume_from,
+                on_step=checkpoint,
+            ):
+                if isinstance(item, AgentStep):
+                    steps.append(
+                        {
+                            "round": item.round_no,
+                            "kind": item.kind,
+                            "detail": item.detail,
+                            "tool": item.call.name if item.call else None,
+                        }
+                    )
+                    continue
+                pieces.append(item.answer)
+                usage = item.usage
+                stop_reason = item.stop_reason
+
+            await self._finish_run(
+                run_id=this_run_id,
+                answer="".join(pieces),
+                stop_reason=stop_reason,
+            )
 
         answer, steps = self._settle_agent_answer(
             prepared, answer="".join(pieces), steps=steps
         )
-        return answer, steps, usage, stop_reason
+        return answer, steps, usage, stop_reason, actual_run_id, reused_steps
 
     @staticmethod
     def _settle_agent_answer(
@@ -1040,6 +1315,8 @@ class KnowledgeCoordinator:
         usage: ModelUsage | None = None,
         agent_steps: list[dict[str, Any]] | None = None,
         agent_stop_reason: str | None = None,
+        agent_run_id: str | None = None,
+        reused_steps: int = 0,
     ) -> dict[str, Any]:
         """回答的**公共后半段**：两层引用校验 → 追加提示 → 落库。
 
@@ -1164,6 +1441,11 @@ class KnowledgeCoordinator:
             # 而这三种情况的用户体感都是"没答好"，不给原因就没法归因。
             "agent_steps": agent_steps or None,
             "agent_stop_reason": agent_stop_reason,
+            #: 这次运行的 id 与复用步数（M12++）。**必须回给客户端** ——
+            #: 没有 `agent_run_id`，"续跑"这件事在接口上就不存在
+            #: （客户端不知道该拿什么 id 回来）。
+            "agent_run_id": agent_run_id,
+            "agent_reused_steps": reused_steps,
         }
 
     def _price_for_remote(self, used_remote: bool) -> ModelPrice | None:
@@ -1247,6 +1529,8 @@ def build_knowledge_coordinator(
         price_config=price_config,
         purchase=purchase,
         approval=approval,
+        # 请求会话一路传下去：Agent 运行记录要用它（见 `_agent_run` 的说明）
+        session=session,
     )
 
 

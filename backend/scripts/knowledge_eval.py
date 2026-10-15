@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 import uuid
@@ -53,10 +54,10 @@ from typing import Any
 # 也只会显示成问号，**不会再抛异常打断报告**。
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
-        try:
+        # 极少数环境不支持（已重定向到不支持 reconfigure 的对象）—— 忽略即可，
+        # 那种情况下本来也不会走到这个编码问题。
+        with contextlib.suppress(OSError, ValueError):
             _stream.reconfigure(encoding="utf-8", errors="replace")
-        except (OSError, ValueError):  # pragma: no cover - 极少数环境不支持
-            pass
 
 sys.path.insert(0, ".")
 
