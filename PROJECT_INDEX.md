@@ -43,6 +43,7 @@
 | [docs/ER-图.md](docs/ER-图.md) | 表结构与关系约束 |
 | [docs/采购内控对照.md](docs/采购内控对照.md) | 外部依据（法规/Oracle/OWASP）↔ 本项目现状 ↔ 定稿口径 |
 | [docs/domain/权限矩阵.md](docs/domain/权限矩阵.md) | 两层权限：接口级 `require_roles` + 数据级 `WHERE` |
+| [docs/domain/遗留矛盾与盲点.md](docs/domain/遗留矛盾与盲点.md) | **核对用**：实施计划/领域设计与代码的 28 处不一致（C1–C28）+ 文档没回答的 16 个问题 |
 | [docs/api/README.md](docs/api/README.md) | 全部 HTTP 接口与认证要求 |
 
 **AI 模块**
@@ -58,8 +59,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [docs/interview/面试.md](docs/interview/面试.md) | 面试题与答案（与本项目相关） |
-| [docs/interview/面试素材.md](docs/interview/面试素材.md) | 项目可讲的细节与数字 |
 | [docs/interview/简历-项目写法.md](docs/interview/简历-项目写法.md) | 这个项目该怎么写进简历 |
+| [docs/history/面试素材-2026-10-15.md](docs/history/面试素材-2026-10-15.md) | ~~项目可讲的细节与数字~~ **已归档（2026-10-15）** —— 它是派生聚合层（与 `面试.md` 重叠 40%、与 `PROGRESS` 41%），且数字已过期（写 544，实际 680）。**别再当入口读**；可直接检索 |
 
 **规划基线（M0 定稿，不改）**
 
