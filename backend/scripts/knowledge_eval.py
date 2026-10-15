@@ -39,6 +39,25 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+# ============================ 输出必须是 UTF-8（否则本脚本会崩）============================
+# 报告里用了 `✓`（U+2713）、`✗`（U+2717）、`⚠️`（U+26A0 U+FE0F）作为可读标记，
+# 而 Windows 上 Python 的 stdout **默认按控制台代码页编码**。
+# 在 `chcp 936`（GBK）的终端里，这五个字符一个都编不出来 ——
+# 报错是 `UnicodeEncodeError: 'gbk' codec can't encode character '\u2713'`，
+# **在跑完所有用例之后、打印报告时**抛，于是看起来像"评测失败"，
+# 其实评测已经跑完了（实测踩到：退出码 1，但库里数据都对）。
+#
+# 修法选"把 stdout 设成 UTF-8"而不是"把 ✓ 换成 ASCII"：
+# 后者会丢掉报告的可读性，而且这个脚本是要**给人看**的。
+# `errors="replace"` 兜底：万一某台机器的控制台连 UTF-8 都显示不了，
+# 也只会显示成问号，**不会再抛异常打断报告**。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):  # pragma: no cover - 极少数环境不支持
+            pass
+
 sys.path.insert(0, ".")
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
