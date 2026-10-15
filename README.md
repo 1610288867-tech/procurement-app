@@ -198,7 +198,7 @@ docker compose stop        # 停止但保留数据
 
 | 限制 | 说明 |
 | --- | --- |
-| **没有备份、没有恢复演练** | 数据库是单个容器、数据靠 bind mount 落在 `D:\develop\procurement\data\postgres`。**没有 `pg_dump` 脚本、没有 WAL 归档 / 时间点恢复（PITR）、没有恢复演练记录** —— 误删只能靠文件系统层面找回。这是当前**最大的容灾缺口**（见 [RISKS.md](RISKS.md) 第一节） |
+| **没有时间点恢复（PITR）** | 已有 `scripts\备份数据库.ps1`（全量 + gzip + 三重校验，落仓库外的 `D:\develop\procurement\backups`）与 `scripts\恢复演练.ps1`（真恢复进临时库并逐表核对，**实测 RTO 下界 4.1 秒**）。但**没有 WAL 归档** → 只能恢复到上一次全量备份的时刻；且**备份与本机同盘**，本机坏了一起没。见 [RISKS.md](RISKS.md) 第一节第 11 条 |
 | Docker Desktop **刻意**未设开机自启 | 每次开工要手动启动引擎（`dev-up.ps1` 一条命令搞定） |
 | `docker-compose.yml` 依赖目录布局 | `include:` 用相对路径，要求代码仓库与基础设施目录**同级**；否则需改一行 |
 | M12 桌面壳与移动端暂不做 | 加分项，不影响主干学习目标 |

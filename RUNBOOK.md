@@ -242,6 +242,35 @@ cd backend
 > Alembic autogenerate **看不见 CHECK 约束的内容变化** —— 至今已手工补过四次
 > （`AWARDED` / `ORDERED`+`RECEIVED` / `INVOICED` / `PAID`+`CLOSED`）。
 
+### 2.7 备份与恢复演练（✅ 已执行验证，2026-10-15）
+
+```powershell
+cd D:\procurement-app
+.\scripts\备份数据库.ps1        # pg_dump 全量 + gzip → D:\develop\procurement\backups
+.\scripts\恢复演练.ps1          # 真恢复进临时库 + 逐表核对行数 + 自动 DROP
+```
+
+**实测数字**（2026-10-15）：备份 **31.5 KB**；演练恢复 **26 张表**、
+**12 张关键表行数全部一致**、**RTO 下界 4.1 秒**。
+
+**为什么必须跑第二个脚本**：备份没恢复过就等于没有备份。
+`恢复演练.ps1` 才回答"这份备份能不能用、要多久、数据对不对"。
+
+| 判据 | 值 |
+| --- | --- |
+| 备份落盘目录 | `D:\develop\procurement\backups`（**仓库外**，默认留 14 份） |
+| 临时库命名 | `{源库}_restore_check_{UTC 时间戳}`，**跑完自动 DROP**（失败也清理） |
+| 拒绝条件 | `-BackupFile` 不存在、容器没跑、临时库名与源库相同 |
+| 源库只读 | 演练对源库**只做 SELECT**（数行数）；所有写操作都在临时库上 |
+
+> ⚠️ **本机两条实测约束**（换环境时会影响实现方式）：
+> 1. **宿主机没有 `pg_dump` / `psql`** —— 只能用容器里的（`pg_dump 16.15`）。
+> 2. **二进制不能走 PowerShell 管道**：`docker exec ... cat 二进制 | Set-Content -AsByteStream`
+>    实测得到 **0 字节**。所以两个脚本都是"**容器内落盘 → `docker cp` 取出**"。
+
+**这份演练不覆盖**：备份与本机同盘（本机坏了一起没）、WAL 归档与时间点恢复（PITR）。
+后者见 [RISKS.md](RISKS.md) 第一节第 11 条。
+
 ## 三、出问题时先看这四条（✅ 均已验证）
 
 | 现象 | 真因 | 处理 |
@@ -274,6 +303,8 @@ docker compose stop        # 停库但保留数据
 | `scripts\seed.ps1` | 演示数据（幂等） |
 | `scripts\ollama.ps1` | 本地模型启停与拉取（`-Serve` / `-Pull` / `-Status`） |
 | `scripts\回归验收.ps1` | **★ 一条命令 14 步回归，无开关，退出码 0 = 全过** |
+| `scripts\备份数据库.ps1` | `pg_dump` 全量 + gzip + 三重校验（落仓库外，默认留 14 份） |
+| `scripts\恢复演练.ps1` | 真恢复进临时库 + 逐表核对行数 + 自动 DROP（**备份没恢复过等于没有备份**） |
 | `scripts\浏览器自检.mjs` | 17 项浏览器验收（自起 Edge） |
 | `scripts\m6-页面实测.mjs` | 51 项 + 截图（需外部 9222 Edge） |
 | `scripts\m11-知识库实测.mjs` | 6 项知识库全链路 |
