@@ -131,7 +131,7 @@ cd D:\procurement-app
 [6]  前端 npm run build（生产构建）
 [7]  确保前后端在跑（不在就起，最多等 90 秒）
 [8]  真实服务冒烟 m6_smoke.py（19 项，跑完自清理）
-[9]  静默失败与接缝探针 regression_probes.py（20 项，跑完自清理）
+[9]  静默失败与接缝探针 regression_probes.py（21 项，跑完自清理）
 [10] 浏览器自检 浏览器自检.mjs（17 项，无窗口 Edge）
 [11] 知识库实测 m11-知识库实测.mjs（6 项，无窗口 Edge）
 [12] 窄屏自检 窄屏自检.mjs（20 项，375×812）
@@ -212,7 +212,7 @@ node scripts\m6-页面实测.mjs         # 51 项 + 截图；⚠️ 需外部已
 
 cd backend
 .\.venv\Scripts\python.exe scripts\m6_smoke.py            # 19 项，对着真实服务打 HTTP
-.\.venv\Scripts\python.exe scripts\regression_probes.py   # 20 项，静默失败与接缝
+.\.venv\Scripts\python.exe scripts\regression_probes.py   # 21 项，静默失败与接缝
 .\.venv\Scripts\python.exe scripts\knowledge_eval.py --gate  # 只看 AI 质量门禁
 ```
 

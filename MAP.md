@@ -40,8 +40,21 @@
 | Python | 3.12 | 虚拟环境在 `backend/.venv` |
 | Node.js | 见 `frontend/package.json` | 前端 |
 | PowerShell | **7.6.6** | DSH 的 `dsh-ops` 插件随包提供（宿主自带的 5.x 不用于本项目的命令） |
-| Ollama | 0.40.3 | 模型目录**项目内** `.ollama\models`（已 gitignore） |
+| Ollama | 0.40.3 | 模型目录**项目内** `.ollama\models`（已 gitignore）。**安装目录里没有 `llama-gguf-split`** |
 | Edge | 126.0.2592.87 | 浏览器验收脚本用（无窗口模式） |
+
+**本机已装模型**（`ollama.ps1 -Status` 可复核）：
+
+| 模型 | 体积 | 用途 |
+| --- | --- | --- |
+| `qwen2.5-7b-instruct` | 4.7 GB | **对话模型（当前）** —— 从 ModelScope 分片 GGUF 合并后导入，`num_ctx 8192` |
+| `qwen2.5-3b-instruct` | 2.1 GB | 旧对话模型，保留备用（换回去只需改 `KNOWLEDGE_LLM_MODEL`） |
+| `quentinz/bge-small-zh-v1.5` | 48 MB | embedding（512 维），制度检索用 |
+
+> ⚠️ **`ollama pull` 在本机走不通**：到 `registry.ollama.ai` 实测 **50–210 KB/s**，
+> 4.4 GB 的 7B 拉过 4 次全失败（最后一次失败后 Ollama 把 blob 与 `-partial` 一起清掉）。
+> 可行路径是**从 ModelScope 下 GGUF**（~850 KB/s）再
+> `.\scripts\导入GGUF.ps1`（它会在需要时先合并分片）。
 
 **关键依赖钉版本**（`backend/requirements.txt` 是**唯一事实来源**）：
 
@@ -148,6 +161,9 @@ resume/                  简历构建（交付物 + 构建脚本）
 | 12 | `docker compose down -v` 会删数据卷 | **本项目禁止**；停库用 `stop` |
 | 13 | 两个浏览器验收脚本不能同时跑 | 它们各占一个固定调试端口（9332/9333/9334），后启动的会去驱动前一个的浏览器 |
 | 14 | 清理脚本不能与测试并发跑 | `testdata_cleanup.py` 会把集成测试正在用的数据删掉，造成**假失败** |
+| 15 | **沙箱下 Python 只能写工作区**，写 `D:\develop\...` 一律 `PermissionError`（而 PowerShell 能写、`docker cp` 也能写 —— 后者由 Docker 服务端执行） | 需要"工作区外的大文件"时：让**容器或 docker cp** 去写。合并 4.36 GB 的 GGUF 就走"写到 `backend\.tmp\`（已 gitignore）" |
+| 16 | **Python 脚本的 stdout 默认按控制台代码页编码**，脚本里的 `✓`/`✅`/`⚠️` 在 GBK 终端或**输出重定向**时报 `UnicodeEncodeError` | 见 [AGENTS.md](AGENTS.md) 第 6.0 节（**已踩三次**）：每个往终端打字的脚本开头显式 `reconfigure(encoding="utf-8")` |
+| 17 | **`ollama pull` 在本机不可用**（50–210 KB/s，4.4 GB 拉 4 次全失败） | 走 ModelScope 下 GGUF + `.\scripts\导入GGUF.ps1`；**Ollama 不支持多文件 GGUF 导入**，分片要先合并 |
 
 **四条 10 秒就能暴露问题的预检**：
 

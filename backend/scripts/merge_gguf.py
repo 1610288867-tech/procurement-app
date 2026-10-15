@@ -314,7 +314,7 @@ def merge(output: Path, shards: list[Path]) -> None:
 
     offsets: list[int] = []
     cursor = 0
-    for (name, dims, ggml_type, _o), _src in new_table:
+    for (_name, dims, ggml_type, _o), _src in new_table:
         offsets.append(cursor)
         cursor = _align(cursor + _tensor_bytes(dims, ggml_type), first.alignment)
     need = data_start + cursor

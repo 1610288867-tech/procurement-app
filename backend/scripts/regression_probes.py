@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import uuid
@@ -31,6 +32,21 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+
+# ============================ 输出必须是 UTF-8（否则这个脚本会崩）============================
+# 每一行结果前面有 `✓`(U+2713) / `✗`(U+2717)，而 Windows 上 Python 的 stdout
+# **默认按控制台代码页编码**。在 `chcp 936`（GBK）或**输出被重定向到文件**时，
+# 它编不出来 → `UnicodeEncodeError`。
+#
+# ⚠️ 它崩在 `check()` 里的 print 上，也就是**第一条断言打印结果的时候** ——
+# 表现是"探针跑了一半突然抛编码错"，与探针要查的东西毫无关系（实测撞到）。
+# ⚠️ **同一个坑在本项目已出现三次**：`knowledge_eval.py`（报告符号）、
+# `merge_gguf.py`（合并对账 ✅）、这里。所以每个往终端打字的脚本都要加这一段，
+# 而不是逐个换符号 —— 换符号只是把问题推给下一个符号。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        with contextlib.suppress(OSError, ValueError):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
 
 BASE = "http://127.0.0.1:8000"
 ADMIN = ("admin", "Dev-Passw0rd!")
@@ -86,9 +102,11 @@ def make_user(username: str, roles: list[str], department_id: str | None) -> str
     from app.database import SessionFactory  # noqa: PLC0415
 
     # 记录类要整包导入：外键指向的表不在元数据里会报 NoReferencedTableError
+    from app.infrastructure.records import agent_run as _agent_run  # noqa: F401, PLC0415
     from app.infrastructure.records import approval as _approval  # noqa: F401, PLC0415
     from app.infrastructure.records import auth  # noqa: PLC0415
     from app.infrastructure.records import catalog as _catalog  # noqa: F401, PLC0415
+    from app.infrastructure.records import knowledge as _knowledge  # noqa: F401, PLC0415
     from app.infrastructure.records import purchase as _purchase  # noqa: F401, PLC0415
     from app.infrastructure.security import hash_password  # noqa: PLC0415
 
@@ -263,6 +281,7 @@ def cleanup(
     from sqlalchemy import delete, func, or_, select  # noqa: PLC0415
 
     from app.database import SessionFactory  # noqa: PLC0415
+    from app.infrastructure.records.agent_run import AgentRunRecord  # noqa: PLC0415
     from app.infrastructure.records.approval import (  # noqa: PLC0415
         ApprovalFlowRecord,
         ApprovalTaskRecord,
@@ -273,6 +292,9 @@ def cleanup(
         BudgetTransactionRecord,
         DepartmentRecord,
         PurchaseCategoryRecord,
+    )
+    from app.infrastructure.records.knowledge import (  # noqa: PLC0415
+        ChatSessionRecord,
     )
     from app.infrastructure.records.purchase import (  # noqa: PLC0415
         IdempotencyRecord,
@@ -335,6 +357,24 @@ def cleanup(
                     delete(ApprovalTaskRecord).where(
                         ApprovalTaskRecord.decided_by.in_(user_ids)
                     )
+                )
+                # ============================ 问答会话也要清 ============================
+                # 接缝⑧ 会以**探针账号**的身份问一句（那是它要验的东西），
+                # 于是库里多了这个账号的 `chat_sessions` / `chat_messages`。
+                # 少了这一步，下面的删用户会被外键挡住：
+                #     update or delete on table "users" violates foreign key constraint
+                #     "chat_sessions_user_id_fkey"（实测撞到）
+                # 表现是**清理阶段崩掉** —— 而清理是回归的收尾，
+                # 它崩了等于"测试污染物零残留"这条验收失去意义。
+                # `chat_messages` 靠 `ON DELETE CASCADE` 跟着走。
+                await session.execute(
+                    delete(ChatSessionRecord).where(
+                        ChatSessionRecord.user_id.in_(user_ids)
+                    )
+                )
+                # Agent 运行记录也引用 users（`agent_runs.actor_id`）
+                await session.execute(
+                    delete(AgentRunRecord).where(AgentRunRecord.actor_id.in_(user_ids))
                 )
                 counts["账号"] = (
                     await session.execute(
@@ -718,6 +758,32 @@ def main() -> int:
         class _StubDecision:
             use_model = False
 
+        # ---- 接缝⑧ 要用的真实数据：一张**已提交**的草稿（它的单号要出现在回答里）----
+        # ⚠️ **两处都踩过，记下来**：
+        #   ① **不能复用 `login()`** —— 它固定用 `PASSWORD`（造探针账号的
+        #      `Probe-Passw0rd!`），而 demo 账号口令是另一套 → 401
+        #      （看起来像"账号被删了"）。
+        #   ② **不能用 admin** —— 它**没有所属部门**，`create_draft` 直接回
+        #      `422 NO_DEPARTMENT`（admin 是管主数据与账号的角色，不需要部门）。
+        # 所以用**探针自己造的 requester**：它有部门、能建单，
+        # 而且 `list_my_purchase_requests` 的可见范围正好覆盖它自己提的单。
+        agent_session = requester
+        agent_request = None
+        # ⚠️ **不吞异常**：第一版用 `with suppress(Exception)` 包住，
+        # 于是任何失败都退化成"本条不适用" —— 一个**永远通过**的断言，
+        # 而它要查的正是"回答里有没有单号"。这类"看起来通过、其实没跑"的形状
+        # 与本项目反复强调的"验证工具自己坏了"是同一类，所以这里让它**炸出来**。
+        draft = new_draft(agent_session, cat_id, "接缝⑧ 回答复杂度探针")
+        # 明细是提交的前置（"申请没有任何明细，不能提交" —— 实测撞到）
+        saved = save_items(agent_session, draft, 20_000)
+        submitted = submit(agent_session, saved)
+        if submitted.status_code != 200:
+            raise SystemExit(
+                f"接缝⑧ 需要一张已提交的单，提交失败："
+                f"{submitted.status_code} {submitted.text}"
+            )
+        agent_request = submitted.json()
+
         coordinator = KnowledgeCoordinator.__new__(KnowledgeCoordinator)
         coordinator._chat = _StubChat()  # type: ignore[assignment]
         agent_used = coordinator._used_remote(_StubDecision(), agent_used=True)
@@ -738,6 +804,48 @@ def main() -> int:
             "接缝⑦续：没注入工具依赖时不走 Agent（两条路共用同一个判据）",
             f"should_use_agent={coordinator._should_use_agent(stub_prepared)}",
         )
+
+        # ============================================================ 接缝⑧：回答的**复杂度**
+        #
+        # 这条钉的是 M12+ 验收里那句话的**实际内容**：
+        #     "端到端：答出 3 张真实单子（含金额、状态、时间）"
+        #
+        # 为什么不能只看"有没有调工具"：**调了工具不等于答得有用**。
+        # 实测（3B）撞到过：工具返回 3/3 条真实数据、`stop_reason=answered`、
+        # `used_model=true`，而最终回答只有 11 个字「我查到了一些采购申请。」
+        # —— 不复述任何单号与金额。只断言"调过工具"的测试**会放行这种回答**。
+        #
+        # 所以这里断言**回答里出现了刚才那张草稿的单号**（结构事实，不是措辞）。
+        # 为了让断言能被"完成/跳过/失败"三态说清，先取后端真实状态：
+        #   模型没配 / 不支持工具 → **这一条不适用**（如实说，不伪装成通过）
+        if agent_request is not None:
+            body = agent_session.post(
+                "/api/v1/chat", json={"question": "我提过哪些采购申请？"}
+            ).json()
+            from app.domain.grounded_answer import NO_GROUNDING_ANSWER
+
+            answer = str(body.get("answer") or "")
+            used_agent = bool(body.get("agent_run_id"))
+            if not used_agent and answer.strip() == NO_GROUNDING_ANSWER:
+                # Agent 路径没走（模型没配或不会用工具）→ 如实标注"不适用"
+                check(
+                    True,
+                    "接缝⑧：回答复杂度（本机未启用 Agent，本条不适用）",
+                    f"reason={str(body.get('reason'))[:60]}",
+                )
+            else:
+                code = str(agent_request.get("code") or "")
+                check(
+                    bool(code) and code in answer,
+                    "接缝⑧：Agent 答业务数据问题要**带上单号**，不能只回一句'我查到了一些'",
+                    f"单号 {code!r} {'在' if code in answer else '**不在**'}回答里：{answer[:70]}",
+                )
+        else:
+            check(
+                True,
+                "接缝⑧：回答复杂度（造数据失败，本条不适用）",
+                "见上面建草稿那一步的输出",
+            )
 
     finally:
         for session in (admin, requester, other):

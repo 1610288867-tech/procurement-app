@@ -155,7 +155,7 @@ ruff + mypy         0 问题 / 88 files
 前端 vitest         28 passed
 前端 build          built
 真实服务冒烟        19/19（m6_smoke.py，跑完自清理）
-静默失败与接缝探针  20/20（regression_probes.py）
+静默失败与接缝探针  21/21（regression_probes.py）
 浏览器自检          17/17（自起无窗口 Edge）
 知识库实测          6/6
 窄屏自检            20/20（375×812）

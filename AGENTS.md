@@ -292,6 +292,40 @@
 
 顺序固定，全绿才算完成。
 
+### 6.0 往终端打字的 Python 脚本必须显式设 UTF-8（**已踩三次**）
+
+本仓库的脚本会用 `✓`(U+2713) / `✗` / `✅`(U+2705) / `⚠️` 做结果标记，而
+**Windows 上 Python 的 stdout 默认按控制台代码页编码**。在 `chcp 936`（GBK）
+终端里、或**输出被重定向到文件**时，这些字符编不出来：
+
+```
+UnicodeEncodeError: 'gbk' codec can't encode character '\u2713'
+```
+
+**为什么这条被单列出来**：它三次都**不是**"脚本逻辑错"，而是
+"脚本在最关键的那一步崩掉"，而且崩的位置极具误导性：
+
+| 脚本 | 崩在哪 | 看起来像什么 |
+| --- | --- | --- |
+| `knowledge_eval.py` | 跑完 27 条用例、**打印报告时** | "评测失败"（其实评测已跑完） |
+| `merge_gguf.py` | 分片校验通过、**写文件之前**的对账 | "合并失败"（其实一个字节都没写） |
+| `regression_probes.py` | **第一条断言打印结果时** | "探针跑一半抛编码错"（与它要查的东西无关） |
+
+**规矩**：新增或修改任何"会往终端打印"的 Python 脚本，开头照抄这一段：
+
+```python
+import contextlib, sys
+
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        with contextlib.suppress(OSError, ValueError):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+```
+
+**不要**改用 ASCII 符号来绕（`v` 代替 `✓`、`ok` 代替 `✅`）—— 那只是把问题
+推给下一个符号，而且报告会变得难读。`errors="replace"` 已经兜住了最差的终端
+（显示成问号，但**不中断**）。
+
 ### 6.1 三条分层自查（均应无任何输出）
 
 ```powershell

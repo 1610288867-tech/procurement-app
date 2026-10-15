@@ -236,7 +236,7 @@ Invoke-Step "真实服务冒烟 m6_smoke.py（19 项，跑完自清理）" {
   if ($LASTEXITCODE -ne 0) { throw "冒烟有未通过项" }
 } $backendDir
 
-Invoke-Step "静默失败与接缝探针 regression_probes.py（20 项，跑完自清理）" {
+Invoke-Step "静默失败与接缝探针 regression_probes.py（21 项，跑完自清理）" {
   $env:PYTHONUTF8 = "1"
   & $python "scripts\regression_probes.py"
   if ($LASTEXITCODE -ne 0) { throw "探针有未通过项" }

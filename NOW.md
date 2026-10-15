@@ -38,7 +38,7 @@ ruff + mypy         0 问题 / 88 files
 前端 build          built
 确保前后端在跑       （不在就起，最多等 90 秒）
 m6_smoke.py         19/19
-regression_probes   20/20
+regression_probes   21/21
 浏览器自检.mjs      17/17
 m11-知识库实测.mjs   6/6
 窄屏自检.mjs        20/20（375×812）
@@ -113,7 +113,7 @@ cd D:\procurement-app
 .\scripts\恢复演练.ps1                              # 真恢复进临时库 + 逐表核对行数 + 自动清理
 cd backend
 .\.venv\Scripts\python.exe scripts\knowledge_eval.py --gate    # 只看 AI 质量门禁
-.\.venv\Scripts\python.exe scripts\regression_probes.py        # 只看静默失败探针（20 项）
+.\.venv\Scripts\python.exe scripts\regression_probes.py        # 只看静默失败探针（21 项）
 ```
 
 详细过程与逐条验收证据在 [PROGRESS.md](PROGRESS.md)；"学到了什么、为什么这么选"在
