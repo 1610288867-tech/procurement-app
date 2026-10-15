@@ -52,6 +52,16 @@ import {
   Loading,
   PageHeader,
 } from "../components/ui";
+// SSE 切帧与安全 JSON 解析抽到 `lib/sse.ts`：它们是**纯逻辑**，
+// 放在页面文件里既没法单测、又让这个文件长到近千行。
+import {
+  asRecords,
+  parseData,
+  readNumber,
+  readText,
+  takeFrames,
+  type SseFrame,
+} from "../lib/sse";
 
 // ================================================================ 类型（与后端形状一一对应）
 
@@ -85,11 +95,32 @@ type ChatSession = { id: string; title: string; created_at: string };
 /** 提问请求体。`session_id` 为 `null` = 新开一个会话。 */
 type ChatRequest = { question: string; session_id: string | null };
 
+/** 一个 Agent 步骤（`event: step`）。
+ *
+ * 后端在 Agent 循环里**每做一步就推一条**：`tool_call`（正在查）与
+ * `tool_result`（查完了）。为什么要分开发两个事件：
+ * "正在查"与"查到了"是用户等的两个不同时刻 —— 只给前者会让人以为卡住了，
+ * 只给后者会让人不知道它在忙什么。
+ */
+type AgentStep = {
+  round: number;
+  kind: string;
+  detail: string;
+  tool: string | null;
+};
+
 /** SSE 帧解出来的事件。`error` 有两种来源：服务端的 `error` 事件，或半个 JSON。 */
 type StreamEvent =
   | { kind: "meta"; meta: ChatMeta }
   | { kind: "delta"; text: string }
-  | { kind: "done" }
+  | { kind: "step"; step: AgentStep }
+  | {
+      kind: "done";
+      //: **`done` 里的事实**（可缺省）：`used_model` 由后端按"模型有没有真的被采用"算，
+      //: 与 `meta` 的预报可能不同 —— 页面以这里为准（见 `parseFrame` 里那段说明）。
+      used_model?: boolean;
+      reason?: string;
+    }
   | { kind: "error"; message: string };
 
 /** 一轮问答（前端的本地记录：后端没给消息 id，因为没有读历史的接口）。 */
@@ -101,6 +132,9 @@ type Turn = {
   /** 只有 `done` 才算 `done`；流断了是 `error`（见文件头第 1 条） */
   status: "streaming" | "done" | "error";
   error: Error | null;
+  /** Agent 执行步骤（走 Agent 时才有）。**保留**而不是只显示最后一条：
+   *  用户会想知道"它到底查了哪些东西"，而那只在完整列表里看得出来。 */
+  steps: AgentStep[];
 };
 
 const STREAM_PATH = "/api/v1/chat/stream";
@@ -127,15 +161,16 @@ export default function Chat() {
     setTurns((prev) => prev.map((turn) => (turn.seq === seq ? change(turn) : turn)));
   }
 
-  async function ask() {
-    const question = draft.trim();
+  /** 提问。`override` 用于「用同一句话重问」——见下面限流分支的说明。 */
+  async function ask(override?: string) {
+    const question = (override ?? draft).trim();
     if (question === "" || streaming) return;
 
     const seq = nextSeq.current;
     nextSeq.current += 1;
     setTurns((prev) => [
       ...prev,
-      { seq, question, answer: "", meta: null, status: "streaming", error: null },
+      { seq, question, answer: "", meta: null, status: "streaming", error: null, steps: [] },
     ]);
     setDraft("");
     setStreaming(true);
@@ -159,15 +194,59 @@ export default function Chat() {
         // 而且真正的流式（服务端一段一段算）反而被盖住了。
         onDelta: (text) =>
           patchTurn(seq, (turn) => ({ ...turn, answer: turn.answer + text })),
+        // Agent 步骤：**追加**到这一轮上，让用户实时看到"它在查什么"。
+        // 不显示的话，整个 Agent 过程对用户就是"转圈 5 秒然后出答案"——
+        // 而 5 秒的空白会让人以为卡住了、甚至刷新页面把请求丢掉。
+        onStep: (step) =>
+          patchTurn(seq, (turn) => ({ ...turn, steps: [...turn.steps, step] })),
         onError: (message) =>
           patchTurn(seq, (turn) => ({ ...turn, status: "error", error: new Error(message) })),
-        onDone: () =>
+        onDone: (final) =>
           // 报过错之后又收到 done（理论上不会有）：**不能把错误擦掉** ——
           // 红字消失比错误本身更糟，用户会以为这段正文是完整的。
-          patchTurn(seq, (turn) => (turn.status === "error" ? turn : { ...turn, status: "done" })),
+          patchTurn(seq, (turn) =>
+            turn.status === "error"
+              ? turn
+              : {
+                  ...turn,
+                  status: "done",
+                  // ⚠️ **用 `done` 的事实覆盖 `meta` 的预报**（实测踩到）：
+                  // `meta` 先发、只能预报；Agent 若一个工具都没调，后端会退回本地兜底
+                  // 那句写死的话术 —— 那时 `meta` 报的"用了模型"是错的，
+                  // 而页面不覆盖就会**正文是拒答句、却不显示「未调用模型」**。
+                  // 只在 `done` 真的给了值时覆盖（缺省时保持 `meta` 的说法）。
+                  meta: turn.meta
+                    ? {
+                        ...turn.meta,
+                        used_model: final.used_model ?? turn.meta.used_model,
+                        reason: final.reason ?? turn.meta.reason,
+                      }
+                    : turn.meta,
+                },
+          ),
       });
     } catch (error) {
-      patchTurn(seq, (turn) => ({ ...turn, status: "error", error: toError(error) }));
+      const normalized = toError(error);
+      // ============================ 限流（429）要特殊对待 ============================
+      // 为什么不能只靠下面那行通用的 `ErrorNote`：
+      //   ① **用户输入会被吃掉**。`setDraft("")` 在发请求**之前**执行（见上面），
+      //      而 429 是在流开始**之前**抛出的 —— 于是问题从输入框消失、
+      //      回答区只有一行红字，用户得把刚才那句话重新打一遍。
+      //      这里把它**还回输入框**（只在输入框为空时还，免得盖掉用户新打的字）。
+      //   ② 限流是**等一会儿就能成功**的状态，不是"出错了"。
+      //      文案要说清"等多久/为什么"，并给一个「用同一句话重问」的按钮 ——
+      //      否则用户只能靠反复点发送来试探，而反复点正是限流要拦的行为。
+      const limited =
+        normalized instanceof ApiError &&
+        (normalized.status === 429 || normalized.code === "CHAT_QUOTA_EXCEEDED");
+      if (limited) {
+        setDraft((current) => (current === "" ? question : current));
+      }
+      patchTurn(seq, (turn) => ({
+        ...turn,
+        status: "error",
+        error: normalized,
+      }));
     } finally {
       setStreaming(false);
       abortRef.current = null;
@@ -218,6 +297,8 @@ export default function Chat() {
                    验收要看的是"最新的那条正在逐字长出来"，而多轮之后
                    "取第一个匹配"会拿到一条早写完了的旧回答，看起来就像流式没生效。 */
                 isLatest={index === turns.length - 1}
+                /* 限流后「重问这一句」——只在没在流式回答时可用 */
+                onRetry={streaming ? undefined : () => void ask(turn.question)}
               />
             ))}
           </ol>
@@ -451,12 +532,37 @@ function HistoryPanel({ sessionId }: { sessionId: string }) {
 }
 
 // ------------------------------------------------------------------ 一轮问答
+/** 这一轮的失败是不是"被限流"（而不是真的出错）。
+ *
+ * 限流与其他错误要分开处理：它是**等一会儿再试就会成功**的状态，
+ * 文案与操作都不同（见 `RateLimitNote`）；混在通用红字里，
+ * 用户只会反复点发送 —— 而反复点恰恰是限流要拦的行为。
+ *
+ * 判据同时看状态码与业务码：只看状态码的话，
+ * 将来别处也用 429 就会被误判成问答限流。
+ */
+function isRateLimited(error: Error | null): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.status === 429 || error.code === "CHAT_QUOTA_EXCEEDED")
+  );
+}
 
-function TurnView({ turn, isLatest }: { turn: Turn; isLatest: boolean }) {
+function TurnView({
+  turn,
+  isLatest,
+  onRetry,
+}: {
+  turn: Turn;
+  isLatest: boolean;
+  /** 「用这句话重问」——不传就不显示那个按钮（例如正在流式回答时） */
+  onRetry?: () => void;
+}) {
   const meta = turn.meta;
   // 未调用模型 = 一次**拒答**，与"模型看过制度说没有"不是一回事（见文件头）
   const refused = meta !== null && !meta.used_model;
   const sources = meta?.sources ?? [];
+  const limited = isRateLimited(turn.error);
 
   return (
     <li className="space-y-2" data-testid="chat-turn">
@@ -479,6 +585,13 @@ function TurnView({ turn, isLatest }: { turn: Turn; isLatest: boolean }) {
           {turn.status === "error" && <Badge tone="danger">未完成</Badge>}
           {turn.status === "streaming" && <span className="text-xs text-faint">正在回答…</span>}
         </div>
+
+        {/* Agent 执行步骤。放在正文**之前**：它就是"回答出来之前发生了什么"，
+            顺序上先看到它才符合真实过程。
+            ⚠️ 只在走 Agent 时才有内容 —— 制度问答那条路不经过工具，步骤为空。 */}
+        {turn.steps.length > 0 && (
+          <AgentSteps steps={turn.steps} running={turn.status === "streaming"} />
+        )}
 
         {refused && (
           <div className="mt-2">
@@ -521,9 +634,116 @@ function TurnView({ turn, isLatest }: { turn: Turn; isLatest: boolean }) {
           </p>
         )}
 
-        {turn.error && <ErrorNote error={turn.error} />}
+        {limited ? (
+          <RateLimitNote message={turn.error?.message} onRetry={onRetry} />
+        ) : (
+          turn.error && <ErrorNote error={turn.error} />
+        )}
       </div>
     </li>
+  );
+}
+
+/** 被限流时的提示（**不是**普通错误）。
+ *
+ * ============================ 为什么单独一个块，而不复用 `ErrorNote` ============================
+ * 三件事不一样：
+ *   1. **它是"等一会儿就能成功"**，不是"出错了"。所以要给出"为什么"和"怎么办"，
+ *      而不是把后端那句话原样一贴（原样贴出来用户也不知道下一步做什么）。
+ *   2. **要给一个重问入口**。没有它，用户只能反复点发送来试探 ——
+ *      而反复点正是限流要拦的行为（也是个坏循环：越试越被拦）。
+ *   3. **要用 warning 而不是 danger 的色**。限流是系统的保护机制在正常工作，
+ *      不是故障；用错误色会让用户以为功能坏了（实测：被限流的人第一反应是"这功能有 bug"）。
+ *
+ * `message` 里已经带了后端算好的"等多久 / 用超了多少"，所以原样显示它 ——
+ * 前端不复述那个数字（复述就会有两处真相，改一处忘一处）。
+ */
+function RateLimitNote({
+  message,
+  onRetry,
+}: {
+  message?: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div
+      className="mt-3 rounded-sm border border-warning/40 bg-warning-bg px-3 py-2 text-sm text-warning"
+      data-testid="chat-rate-limit"
+    >
+      <p className="font-medium">提问太频繁，这条问题没有发出去</p>
+      <p className="mt-1">
+        {message ?? "服务端做了提问频率限制。"}
+      </p>
+      <p className="mt-1">
+        你刚才那句话已经<strong>放回上面的输入框</strong>，稍等片刻可以直接再发一次。
+      </p>
+      {onRetry && (
+        <div className="mt-2">
+          <Button type="button" variant="ghost" onClick={onRetry}>
+            现在就用这句话重问
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 工具名 → 给用户看的中文标签。
+ *
+ * 为什么不直接把工具名显示出来：`list_my_purchase_requests` 是**给模型看的标识**，
+ * 显示给用户就是泄漏内部命名。而这个映射**故意不放进后端**——
+ * 它是纯展示，改文案不该要求重发一次接口。
+ *
+ * 没有映射的工具**原样显示工具名**（而不是"未知工具"）：
+ * 新加工具时忘了加映射的表现应该是"看到了一个英文名"，
+ * 而不是"看到未知工具"（后者会让人以为出了故障）。
+ */
+const TOOL_LABELS: Record<string, string> = {
+  list_my_purchase_requests: "查询采购申请",
+  get_purchase_request: "查看申请详情",
+  list_my_approval_todos: "查询我的待办",
+  create_purchase_draft: "准备创建申请草稿",
+};
+
+/** Agent 执行步骤列表。
+ *
+ * ============================ 为什么要显示它 ============================
+ * 一次 Agent 提问要几秒到几十秒（模型回合 + 工具查询）。**这段时间里界面上
+ * 什么都不动**，用户的第一反应是"卡住了"，然后刷新页面 —— 而刷新会把请求丢掉。
+ * 把"正在查什么 / 查到了什么"显示出来，等待就变成了可理解的过程。
+ *
+ * 这也是 Agent 与普通问答在**体感上**最大的差别：普通问答是"打字机"，
+ * Agent 是"它去办事了"。不显示步骤的话，后者看起来就像前者的卡顿版。
+ */
+function AgentSteps({ steps, running }: { steps: AgentStep[]; running: boolean }) {
+  return (
+    <ol className="mt-2 space-y-1" data-testid="chat-agent-steps">
+      {steps.map((step, index) => {
+        const isLast = index === steps.length - 1;
+        // 三种 `kind` 各给一句话，**互斥**（用 map 而不是嵌套三元：
+        // 嵌套三元在这里要写四层，而四层三元没人读得懂）。
+        const text =
+          step.kind === "tool_call"
+            ? `正在${TOOL_LABELS[step.tool ?? ""] ?? step.tool ?? "查询"}…`
+            : step.detail;
+        // `tool_call` 还没回来时转圈，其余都是已完成的勾。
+        // `guard`（护栏触发：超时/轮次用尽）用 warning 色，它需要用户注意。
+        const isGuard = step.kind === "guard";
+        const pending = step.kind === "tool_call" && isLast && running;
+        return (
+          <li
+            key={`${step.round}-${index}`}
+            className="flex items-start gap-2 text-xs"
+            data-testid={isGuard ? "chat-agent-guard" : "chat-agent-step"}
+          >
+            <span aria-hidden="true" className="mt-0.5 text-faint">
+              {pending ? "◐" : "✓"}
+            </span>
+            <span className={isGuard ? "text-warning" : "text-muted"}>{text}</span>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -647,7 +867,13 @@ function listMessages(sessionId: string): Promise<ChatMessage[]> {
 type StreamHandlers = {
   onMeta: (meta: ChatMeta) => void;
   onDelta: (text: string) => void;
-  onDone: () => void;
+  /** Agent 执行步骤（只有走 Agent 时才会有）。**可选**：
+   *  不想显示步骤的调用方（例如只关心正文的回放路径）不必实现它。 */
+  onStep?: (step: AgentStep) => void;
+  /** 收尾。参数是 `done` 事件里的**事实**（可能缺省）：
+   *  `used_model` 由后端按"模型有没有真的被采用"算，与 `meta` 的预报可能不同 ——
+   *  调用方应当用它覆盖 `meta.used_model`，否则徽标会与正文矛盾。 */
+  onDone: (final: { used_model?: boolean; reason?: string }) => void;
   onError: (message: string) => void;
 };
 
@@ -742,6 +968,7 @@ async function streamAnswer(
     if (!event) return;
     if (event.kind === "meta") handlers.onMeta(event.meta);
     else if (event.kind === "delta") handlers.onDelta(event.text);
+    else if (event.kind === "step") handlers.onStep?.(event.step);
     else if (event.kind === "done") {
       // ⚠️ **`done` 不只是"可以收尾了"，它必须回调出去**。
       // 这里原先只置了 `closed = true` 而没调 `handlers.onDone()` ——
@@ -749,7 +976,9 @@ async function streamAnswer(
       // 光标一直闪，而回答其实早就写完了。
       // 实测由浏览器实测脚本发现（它被迫改用"提问按钮文案"判断答完没答完）。
       closed = true;
-      handlers.onDone();
+      // 把 `done` 里的**事实**（`used_model` / `reason`）一起交出去：
+      // 页面用它覆盖 `meta` 的预报，徽标才不会与正文矛盾（见 `parseFrame` 的说明）。
+      handlers.onDone({ used_model: event.used_model, reason: event.reason });
     } else {
       closed = true;
       handlers.onError(event.message);
@@ -784,63 +1013,7 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-// ------------------------------------------------------------------ SSE 切帧（纯函数）
-
-/** 一个 SSE 帧：`event: delta` + `data: {...}` 这样的若干行。`data` 还没解成 JSON。 */
-type SseFrame = { event: string; data: string };
-
-/** 从缓冲区里切出**完整的**帧，剩下的半个留在 `rest` 里等下一个 chunk。
- *
- * 只认三件事（SSE 规范里与我们有关系的部分）：
- *   - 行前缀 `event:` / `data:`，字段名后允许一个空格；
- *   - 空行 = 一个帧结束；
- *   - `:` 开头的行是注释（心跳），丢掉。
- * 字段值里的冒号属于值（例如 `data: {"a":"b:c"}`），所以只按**第一个**冒号切。
- */
-function takeFrames(buffer: string): { frames: SseFrame[]; rest: string } {
-  // 换行先统一：SSE 允许 \r\n / \r / \n 三种。不统一的话 "\r\n\r\n" 这个分隔符会被漏掉，
-  // 表现是"事件一个都不触发、正文一个字都不出"。
-  const blocks = buffer.replace(/\r\n?/g, "\n").split("\n\n");
-  // 最后一段是**没写完的**：它必须留到下一个 chunk 拼上再解析
-  const rest = blocks.pop() ?? "";
-
-  const frames: SseFrame[] = [];
-  for (const block of blocks) {
-    let name = "";
-    const dataLines: string[] = [];
-    for (const line of block.split("\n")) {
-      if (line === "" || line.startsWith(":")) continue;
-      const colon = line.indexOf(":");
-      const field = colon === -1 ? line : line.slice(0, colon);
-      const raw = colon === -1 ? "" : line.slice(colon + 1);
-      const value = raw.startsWith(" ") ? raw.slice(1) : raw;
-      if (field === "event") name = value;
-      else if (field === "data") dataLines.push(value);
-    }
-    // 多行 `data:` 按规范用换行拼起来；没有 data 的帧（例如纯心跳）直接丢
-    if (dataLines.length > 0) {
-      frames.push({ event: name === "" ? "message" : name, data: dataLines.join("\n") });
-    }
-  }
-  return { frames, rest };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-/** `Array.isArray` 会把类型收成 `any[]`，这里自己收一次，顺带过滤掉非对象项。 */
-function asRecords(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
-}
-
-function readText(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function readNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
+// ------------------------------------------------------------------ 帧 → 页面事件
 
 function readSource(record: Record<string, unknown>): ChatSource {
   return {
@@ -855,20 +1028,17 @@ function readSource(record: Record<string, unknown>): ChatSource {
 
 /** 帧 → 有类型的事件。未知事件名返回 `null`（丢弃而不是报错）：
  *  后端将来加事件（心跳、用量…）时前端不该崩，而正文只走 `delta` 一条路，
- *  所以"忽略一个不认识的事件"与"丢掉一段正文"是两件事。 */
+ *  所以"忽略一个不认识的事件"与"丢掉一段正文"是两件事。
+ *
+ * 切帧与 JSON 解析在 `lib/sse.ts`（那部分是通用逻辑、有单测）；
+ * **这里只负责业务字段的解读** —— 那些字段属于本页面的领域模型。 */
 function parseFrame(frame: SseFrame): StreamEvent | null {
-  let payload: unknown;
-  try {
-    payload = JSON.parse(frame.data) as unknown;
-  } catch {
-    // 半个 JSON 只可能来自"连接断在事件中间"。这里不静默跳过 ——
-    // 跳过等于把缺失的那段正文当成没发生过。
-    return {
-      kind: "error",
-      message: `服务端事件无法解析（event: ${frame.event}）—— 回答可能不完整`,
-    };
+  const parsed = parseData(frame);
+  if (!parsed.ok) {
+    // 解析失败**不静默跳过**：跳过等于把缺失的那段正文当成没发生过。
+    return { kind: "error", message: parsed.message };
   }
-  const record = isRecord(payload) ? payload : {};
+  const record = parsed.value;
 
   if (frame.event === "meta") {
     return {
@@ -882,7 +1052,31 @@ function parseFrame(frame: SseFrame): StreamEvent | null {
     };
   }
   if (frame.event === "delta") return { kind: "delta", text: readText(record.text) };
-  if (frame.event === "done") return { kind: "done" };
+  if (frame.event === "step") {
+    // Agent 执行步骤。字段名与后端 `_answer_with_agent` 推的一致：
+    // `round` / `kind`（tool_call | tool_result | guard）/ `detail` / `tool`。
+    return {
+      kind: "step",
+      step: {
+        round: readNumber(record.round),
+        kind: readText(record.kind),
+        detail: readText(record.detail),
+        tool: typeof record.tool === "string" ? record.tool : null,
+      },
+    };
+  }
+  if (frame.event === "done") {
+    // ⚠️ **`done` 里带的是"事实"，`meta` 里的是"预报"**（实测踩到）：
+    // `meta` 必须在正文之前发出去，所以它只能预报"这次会不会用模型"；
+    // 而 Agent 路径下模型可能**一个工具都不调**，那时后端会退回本地兜底那句写死的话术 ——
+    // 采用的字**不是模型生成的**，可 `meta` 已经报了"用了模型"，页面于是不显示徽标，
+    // 而正文却是写死的拒答句。`done.used_model` 由后端按**事实**算，这里带出来覆盖预报。
+    return {
+      kind: "done",
+      used_model: typeof record.used_model === "boolean" ? record.used_model : undefined,
+      reason: readText(record.reason) || undefined,
+    };
+  }
   if (frame.event === "error") {
     return {
       kind: "error",
