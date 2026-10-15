@@ -1,11 +1,14 @@
 # PROGRESS · 阶段验收清单与进度
 
 > **用途**：核对每个阶段的验收工作，记录工作进度。
-> 做法：打印这一页，做完一项勾一项。**只有验收项全部通过才进入下一阶段**——
-> 不要"差不多就往下走"，越往后欠的债越难还。
+> **本文件记「验收过了没有」**；「学到了什么、为什么这么做」在 [Development progress.md](Development%20progress.md)。
 >
-> 阶段四问总结写在 [Development progress.md](Development%20progress.md)。两份文件分工不同：
-> 本文件记「验收过了没有」，那份记「学到了什么」。
+> ⚠️ **M0–M11 的逐条验收明细已归档**（本文件原 1415 行）：
+> 完整证据（逐条测试名、报错原文、当时的数字）在
+> [docs/history/PROGRESS-M0-M11-全文-2026-10-14.md](docs/history/PROGRESS-M0-M11-全文-2026-10-14.md)。
+> 当前状态速查在 [NOW.md](NOW.md)；真债与风险在 [RISKS.md](RISKS.md)。
+>
+> 最后更新：2026-10-14
 
 ## 进度总览
 
@@ -13,1247 +16,213 @@
 | --- | --- | --- | --- |
 | M0 | 准备与设计定稿 | ✅ 完成 | 2026-10-01 |
 | M1 | 骨架贯通 | ✅ 完成 | 2026-10-02 |
-| M2 | 主数据 | ✅ 完成 ※ | 2026-10-02 |
-| M3 | 账号与权限 | ✅ 完成 ※ | 2026-10-02 |
+| M2 | 主数据 | ✅ 完成 | 2026-10-02 |
+| M3 | 账号与权限 | ✅ 完成 | 2026-10-02 |
 | M4 | 前端设计系统 | ✅ 完成 | 2026-10-02 |
-| M5 | 采购申请 | ✅ 完成 ※ | 2026-10-02 |
+| M5 | 采购申请 | ✅ 完成 | 2026-10-02 |
 | M6 | 审批引擎 ★ | ✅ 完成 | 2026-10-03 |
 | M7 | 预算并发预留 ★ | ✅ 完成 | 2026-10-04 |
 | M8 | 回归验收 | ✅ 完成 | 2026-10-04 |
 | M9 | 附件与时间线 | ✅ 完成 | 2026-10-04 |
-| M10 | 履约链 | ✅ **完成**（8.1–8.4 后端 + 履约工作台前端） | 2026-10-06 |
-| M11 | AI 制度助手 | ✅ **完成**（知识库 + 检索 + 引用校验 + 流式） | 2026-10-06 |
-| M12 | 桌面壳与移动端 | ⏸️ **暂不做**（2026-10-06 决定：加分项，不影响主干） | — |
+| M10 | 履约链（8.1–8.4 后端 + 履约工作台前端） | ✅ 完成 | 2026-10-06 |
+| M11 | AI 制度助手 | ✅ 完成 | 2026-10-06 |
+| **M11+** | AI 模块增强（真 embedding / 评测门禁 / 引用支撑性 / 可观测 / 限流） | ✅ 完成 | 2026-10-14 |
+| **M12+** | Function Calling 与最小 ReAct（工具层 + 权限继承 + 两段式写工具） | ✅ 完成 | 2026-10-14 |
+| M12 | 桌面壳与移动端 | ⏸️ **暂不做**（加分项，不影响主干） | — |
 
----
+## M0–M9 摘要（明细见归档）
 
-## M0 · 准备与设计定稿 ✅ 2026-10-01
-
-- [x] `docker compose up -d` 成功，`psql` 能连上并查到版本号（**PostgreSQL 16.15 / pgvector 0.8.6**）
-- [x] 后端 `GET /health/live` 返回 `{"status":"ok"}`
-- [x] 后端 `GET /health/ready` 返回 `{"status":"ok","database":"up"}`
-- [x] 前端 `localhost:5173` 能打开（HTTP 200 / Vite 6.4.3）
-- [x] Vite 代理 → 后端链路通（`/health/ready` 经 5173 返回 `database: up`）
-- [x] `pytest` 能跑（4 passed）
-- [x] `tsc --noEmit` / `vitest run` / `ruff` / `mypy` 全绿
-- [x] 设计产物三份：`docs\ER-图.md`、`docs\业务规则.md`、`docs\金额-审批链对照表.md`
-
-## M1 · 骨架贯通 ✅ 2026-10-02
-
-- [x] `GET /api/v1/suppliers` 返回 `[]`
-- [x] `POST` 后拿到带 id 的对象（`{"id":"09ad241f-…","code":"SUP-E2E-001","active":true}`）
-- [x] **重复 `code` 提交返回 409**，且错误体是统一形状（`{"error":{"code":"CONFLICT","message":…,"request_id":…}}`）
-- [x] **重启后端，数据还在**（停进程再起，列表仍有 `SUP-E2E-001`）
-- [x] Alembic `upgrade head` 可重复执行，不报错
-- [x] `0001` 迁移人工检查过（UUID 主键 / `code` 唯一约束 / `timestamptz` + `now()` / `ix_suppliers_active_name`）
-- [x] 浏览器页面显示刚建的供应商（页面上已建 `供应商A/001`、`B/002`；经 5173 代理 GET 返回 200 与这两条）
-
-> ※ 第 7 条由 `money.ts` 单测 + 预算接口集成测试共同覆盖，**未做浏览器抓包**。
-
-## M2 · 主数据 ✅ 2026-10-02
-
-- [x] 能创建品类、填 3 条审批规则，保存后重新打开能看到
-  （`test_create_category_then_read_back`；存进去的是补齐默认值后的策略）
-- [x] `role: "BOSS"` → 422（第一层 Pydantic 结构拦住）
-- [x] **`{"gte": ["amount", 100_000]}`（漏 `_fen`）→ 422，且提示点名 `amount_fen`**
-- [x] **没有零阈值兜底的策略 → 422**（提示里说清"会算出空审批链"）
-- [x] 阈值写浮点（`10000.5`）→ 422
-- [x] 同一 `order` 出现两次 → 422
-- [x] 能给某部门某品类配预算；界面显示「元」、库里存「分」
-  （`test_budget_stores_fen_and_rejects_duplicate_scope` 断言库里是 `100000` 分）
-- [x] 前端填 1000 元 → 请求体 `100000`（`money.test.ts` 直接断言 `yuanToFen("1000") === 100000`）
-- [x] 供应商能禁用，禁用后 `/api/v1/suppliers` 查不到（管理员列表里还看得到）
-
-## M3 · 账号与权限 ✅ 2026-10-02
-
-- [x] **8 个角色**都能登录，密码错误 401
-  （`test_wrong_password_returns_401`；`user_factory` 按角色造账号，`user_roles` 里 admin 持 `ADMIN+GM`）
-- [x] `REQUESTER` 的 token 调管理员接口 → **403**（不是 404、不是 200）
-  （`test_admin_route_rejects_a_requester_with_403`；未登录则是 401）
-- [x] 手改 Cookie 里的 token → 401（`test_tampered_cookie_is_rejected`）
-- [x] **登录连错 5 次后第 6 次 → 429**，窗口过期后恢复
-  （`test_sixth_attempt_after_five_failures_returns_429`；窗口行为由 `test_login_throttle.py` 单测覆盖）
-- [x] 冻结账号后旧 token 立即失效（`test_freezing_an_account_kills_its_existing_token`，靠 `token_version += 1`）
-- [x] `refresh_token` Cookie 的 `Path` 是 `/api/v1/auth/refresh`
-  （`test_refresh_cookie_is_scoped_to_the_refresh_path`，直接断言 Set-Cookie 头）
-- [x] 库里 `users.password_hash` 不含原始密码
-  （`test_users_password_hash_never_holds_the_raw_password`；另在库上直接查过 `like '%Dev-Passw0rd!%'` → 0 行）
-
-### 三项依赖后续阶段的验收（本阶段无法真跑，不许假装通过）
-
-这三项要的是"**申请**这条数据"，而 `purchase_requests` 是 M5 才建的表。
-机制本身已经在 M3 做完了（`domain/permissions.py` 的 `resolve_visibility`，
-9 条单测覆盖四个角色的可见范围），缺的只是把它挂到真实查询上：
-
-| 验收项 | 依赖 | 什么时候补测 |
-| --- | --- | --- |
-| 换用户 id 取别人的申请 → 404 | `purchase_requests` 表 + M5 的查询 | M5 建表后第一条就测它 |
-| `PROCUREMENT` 跨部门可见，`DEPT_MANAGER` 不能 | 同上 | M5 |
-| `ADMIN` 兼 `GM` 能拿到 200000 元申请的 GM 待办 | M6 的审批任务表 | M6 |
-
-> `ADMIN` 兼 `GM` 的**数据**已经就位（`user_roles` 里 admin 有两条角色），
-> 只差 M6 生成待办。M3 已能验证的是"角色解析结果是 `ADMIN+GM`"
-> 与"`resolve_visibility` 对 GM 返回 `ALL`"。
-
-## M4 · 前端设计系统 ✅ 2026-10-02
-
-- [x] 设计令牌集中在 `index.css` 的 `@theme`，页面里不再写死色号
-      （暖白极简：页面 `#fcfaf8` / 侧边栏 `#f4efe9` / 卡片白 / 标题 `#1a1a1a`；取值来自参考站的计算样式）
-- [x] 外壳改成「侧边栏 + 内容区」，窄屏折到顶部；菜单按角色渲染
-- [x] 共享界面原语 `components/ui.tsx`，六个页面全部改用它（删掉了重复的 `pages/admin/_ui.tsx`）
-- [x] **侧边栏显示的账号与角色，与 `GET /api/v1/auth/me` 返回的一致**
-      （自检 A4：账号区 `ADMIN+GM` + 管理员菜单三项齐全；B1：requester 菜单**恰好只剩两项**）
-- [x] 已登录的人打开 `/login` 会跳回目标页，不再同时看到登录表单与"退出"
-- [x] 浏览器自检 **11 项全过**（`node scripts\浏览器自检.mjs`，exit 0）
-      （当时 11 项；M7 加了「预算看板」那一条，现为 **12 项**）
-- [x] `npx tsc --noEmit` / `npx vitest run`（14 passed）/ `npm run build`（gzip 74.81 KB）全绿
-- [x] 既有交互不回归：登录跳回原页面、HttpOnly 生效、无兜底策略 422 原文、预算「元⇄分」、越权提示页
-
-> 本阶段**没有改任何后端接口**，也没有新增业务功能。
-> 后端那一轮的三处改动（`budgets` CHECK 约束、供应商资质有效期过滤、自检 C3 竞态）
-> 属于独立的一次修复，已在后端集成测试里覆盖（unit 50 + integration 41 = **91 passed**）。
-
-### M4 之后的前端再优化（2026-10-04，参考主流后台再刷一遍）
-
-不是新阶段，是**同一套设计系统的第二次打磨**（令牌、原语、外壳三处一起动，页面不改写法）。
-参考对象：小米 MiMo 文档站的侧栏分组、小米账号 / 知乎 / 高校融合门户的**分栏登录页**、
-博客的**右侧本页导航**、GitHub 仪表盘的**问好 + 快捷入口 + 指标卡**。
-
-| 改了什么 | 落在哪 | 为什么 |
-| --- | --- | --- |
-| 新增 `--radius-lg` 与两级阴影 `--shadow-card` / `--shadow-pop` | `index.css` 的 `@theme` | 卡片需要"被托起来"一点点；登录面板与粘性目录需要更明显的浮起层次 |
-| 面包屑（宽屏走顶栏、窄屏走页内）、`Stat` 指标卡、`PageToc` 本页导航、`Badge`、`EmptyState` 带行动入口、`Button` 的 `size/block` | `components/ui.tsx` | 这些"每个长页面都要有"的排版件，一次做成原语，九个页面一起受益 |
-| 外壳：侧栏加**图标 + 分组标题 + 账号卡片**，新增**粘性顶栏**（面包屑 + 环境标记 + 接口文档入口） | `App.tsx` | 侧栏回答"我能去哪"，顶栏回答"我在哪、这套是不是演示环境" |
-| **登录页改独立全屏分栏**（左侧品牌与四条能力，右侧表单） | `pages/Login.tsx` | 登录是"还没有身份"的时刻：给他讲清这是什么系统，比摆一个侧边栏有用 |
-| 首页加**工作台**（问好 + 快捷入口 + 三个数字），环境自检保留在下方 | `pages/Home.tsx` | 先回答"我该做什么"，再回答"系统正不正常"；三个数字全部来自既有接口，**没开新接口** |
-| 申请详情改**两栏 + 右侧「本页导航」**（滚动高亮） | `pages/requester/RequestDetail.tsx` | 四段内容滚到中段容易忘了下面还有什么 |
-| 表格行悬停高亮、表头小一号、单元格留白加大、加载态不再借用空状态样式 | `ui.tsx` + 三个列表页 | 待办/申请列表一行六七列，看串行是真问题 |
-
-**没有违反边界**（这是本次最要紧的一条，逐条核过）：
-
-- 自检脚本依赖的锚点一个没动：`input[autocomplete=username]`、`input[type=password]`、
-  **第一个 `<form>` 就是登录表单**、常驻的「显示/隐藏」按钮、`[data-testid=app-nav]` 里的
-  `<a>` 集合与顺序、`data-testid=approval-timeline`、`data-testid=no-department-notice`；
-- **草稿详情页仍然不含「审批进度」字样** —— 右侧目录按"实际渲染出来的分区"生成，
-  草稿没有审批流就没有那一条（页面实测第 4 项专测这个）；
-- 分类/预算表单的字段顺序与 `byLabel('预算金额')` 文本没动（自检的 C1/C3 靠它驱动）；
-- 视觉改动全部走令牌与原语：页面里**写死色号 0 处**，换风格仍然只动 `index.css`。
-
-**验证**（改动后重跑）：浏览器自检 **12/12**、`m6-页面实测` **20/20**、
-`tsc` 无错误 / `vitest` 14 passed / `npm run build` 通过（286.96 KB，gzip 88.53），
-回归入口 `.\scripts\回归验收.ps1` **退出码 0**（11 步全绿）。
-
-### 回归入口的一个"假通过"缺陷（2026-10-04 修）
-
-上一次回归的"退出码 0"其实**不可信**：`pytest` 输出 `1 failed, 221 passed` 时入口仍判 ✓。
-根因是 `Invoke-Step` 在函数作用域读 `$LASTEXITCODE`，而外部命令是在 `& $Body` 的**子作用域**里跑的
-（我在函数里那句 `$LASTEXITCODE = 0` 又在本地建了副本），比较的永远是 0。
-
-修法：退出码检查放进**每个脚本块内部**（与外部命令同作用域），失败即 `throw`；
-已用 `cmd /c exit 7` 单独验证这条判据能捕获失败。
-
-> 教训记在这里：**回归入口本身也会坏，而且它坏了会让人以为一切正常。**
-> 修好之后第一次跑，它立刻报出全量测试的偶发失败（见下）。
-
-### ✅ 已修：只追加日志的排序退化（P1，2026-10-04 当日确认后修复）
-
-全量测试 5 轮里失败 2 轮，两个不同用例、同一根因：
-
-| 用例 | 现象 |
+| 阶段 | 验收要点（**当时的实测**） |
 | --- | --- |
-| `test_timeline_is_append_only_across_actions` | 时间线里「提交」与「生成审批链」顺序颠倒 |
-| `test_ledger_covers_all_three_kinds_and_sums_to_zero` | 预算流水里 `SPEND` 与 `RELEASE` 顺序颠倒 |
-
-**根因**：同一事务里写的多条记录，`datetime.now(UTC)` 可能落在**同一微秒**，
-于是 `ORDER BY created_at` 退化成 `id`（UUID）随机比较 —— M6 那次的应用侧时间戳
-只把概率压小、没有消除。
-
-**改法**（按建议方案落地）：迁移 `b7d3f0c41a26_log_sequence_columns.py`
-给 `request_events` 与 `budget_transactions` 各加一列 `seq BIGINT GENERATED BY DEFAULT AS IDENTITY`，
-排序改用它，`created_at` 只用于显示。迁移分三步走：加可空列 → 按原排序键回填并推进序列 →
-补 `NOT NULL`（旧行的真实落盘顺序已不可还原，只能保持它们原来的顺序，这一点写在迁移注释里）。
-
-| 改动点 | 文件 |
-| --- | --- |
-| 两个模型的 `seq` 列 + 为什么必须有序号 | `records/purchase.py`、`records/catalog.py` |
-| 写入路径不再靠时间戳排序 | `event_repo.append/list_for_request`、`budget_repo._append/list_transactions` |
-| 测试/探针的读法改为 `ORDER BY seq` | `tests/test_api_budget.py`、`tests/test_api_requests.py`、`scripts/regression_probes.py` |
-
-**过程中撞出的坑（值得记）**：`budget_transactions.created_at` **没有数据库默认值**
-（`request_events` 那一列有 `now()`）。我先把"不再由应用侧写 `created_at`"当成对称清理，
-结果该列 `NOT NULL` 违约 —— 而违约发生在 `flush()` 里，正好被 `_append` 的
-`except IntegrityError` 接住，报出来的是"**这笔申请已经有一条 RESERVE 流水**"，
-指错方向整整一轮（7 条预算用例全挂在这句上）。
-教训：**SQLAlchemy 的 `IntegrityError` 不只是唯一约束，也可能只是 NOT NULL** ——
-转换错误码时不要把底层原因盖掉。
-
-**验证**：
-
-- `pytest -m unit` **129 passed**；`pytest -m integration` **93 passed**；
-- **全量 5 轮连跑 5/5 全绿**（222 passed ×5，用时 37.2–40.6s）—— 这正是当时用来暴露它的跑法；
-- ORM 插入后 `seq` 由数据库发回（实测 flush 后拿到 10、11，回滚无残留）；
-- 迁移可逆：`downgrade -1` 后列与序列都被带走、**9 条事件 / 1 条流水一行没少**；
-  再 `upgrade head` 回填结果与第一次**逐行一致**，序列停在 `last_value=10, is_called=f`。
-
-### 窄屏（<768px）响应式实测（2026-10-04，新增 `scripts\窄屏自检.mjs`）
-
-上一条"窄屏未验证"补上了。做法不是肉眼看截图，而是把视口真的切成 **375×812**
-（CDP 的 `Emulation.setDeviceMetricsOverride`），再量断点两侧的**客观差异**。
-
-```powershell
-node scripts\窄屏自检.mjs      # 20 项，退出码 0 = 全过；不写库、只读页面
-```
-
-| 组 | 验什么 | 实测 |
-| --- | --- | --- |
-| A | 登录页：无横向溢出、表单未超出视口、**不套外壳**（没有可见 `<main>`、侧边栏不可见） | ✅ 表单宽 327 / 视口 375 |
-| B | 外壳断点：侧栏窄屏是**页顶整宽横条**（375px），宽屏是**固定左栏**（256px）； 顶栏面包屑宽屏显示、页内面包屑窄屏显示（**两处不同时出现**）；菜单链接数不变 | ✅ 375 → 256 的跳变就是断点生效的硬证据 |
-| C | 申请列表与详情：无横向溢出、正文非空、详情页右侧「本页导航」窄屏隐藏 / 宽屏显示 | ✅ `display:none` → `display:block`（宽 180） |
-
-**结论**：四个视口（登录 / 工作台 / 申请列表 / 申请详情）在 375px 下 `scrollWidth` 全部等于 375，
-**0 处横向溢出**。过程中顺手补了一处真缺口：**首页原本没有页内面包屑**，
-而窄屏偏偏只有页内那一处 —— 手机上就完全没有"我在哪"这层信息，已补上
-（`pages/Home.tsx` 的 `PageHeader` 加 `breadcrumb`）。另给 `PageToc` 加了
-`data-testid="page-toc"`，让"本页导航在窄屏隐藏"可被脚本断言，而不是靠人看。
-
-> 这个脚本**还没有接进** `回归验收.ps1` 的固定步骤（那要改回归入口本身，属另行决定）。
-
-
-## M5 · 采购申请 ✅ 2026-10-02
-
-- [x] 能建草稿、改草稿、加三行明细，`amount_total` 由后端算出且正确
-      （`test_draft_with_three_lines_computes_amount_on_the_server`：20000+1+9999=30000 分，并直接查库核对）
-- [x] 用旧 `version` 提交修改 → **409**（`test_stale_version_returns_409`）
-- [x] 同一个 `Idempotency-Key` 提交两次，只产生一条申请（第二次是重放，`version` 不再 +1）
-- [x] 同一个键但内容不同（版本不同）→ **409**（`test_same_key_different_payload_returns_409`）
-- [x] **并发同键提交（`asyncio.gather`）→ 恰好一个 200、一个 409**，库里状态只推进一次、只有一条提交事件
-- [x] 提交后状态变 `IN_APPROVAL`，时间线上**两条**事件（创建 + 提交），并带 `DRAFT → IN_APPROVAL`
-- [x] 已提交的申请不能再 `PATCH`（409），明细也不能再 `PUT`（409）
-- [x] 补上 M3 挂账的两条：**换 id 取别人的申请 → 404**、`DEPT_MANAGER` 看不到别的部门
-      （`test_another_requester_gets_404_not_403` / `test_department_manager_sees_own_department_but_not_others`）
-- [x] 空明细 / 0 元提交 → 422，且提示是"申请没有任何明细"而不是底层解析报错
-- [x] 撤回后不能再提交（409）；丢弃只能对草稿（409）
-
-> 本轮同时修掉一个 **M3 起就存在的真 bug**：`client.ts` 的 `send()` 里 `...init` 写在
-> `headers` 之后，把默认的 `Content-Type: application/json` 覆盖掉了 ——
-> **只有带自定义头的接口会中招**（提交/撤回要带 `Idempotency-Key`），
-> 现象是后端 422 报 "Input should be a valid dictionary…"。已在浏览器里实测复现并修复。
-
-## M6 · 审批引擎 ★ ✅ 2026-10-03
-
-全部通过。**证据**（可复核）：
-
-| 验收项 | 实测依据 |
-| --- | --- |
-| 500 / 5000 / 50000 / 200000 元 → 1 / 2 / 4 / 5 个任务 | `pytest tests/test_api_approvals.py` 参数化 4 例；对**真实服务**跑的 `scripts/m6_smoke.py` 同样 4 例全过 |
-| 500 元只有部门主管看得到 | 采购/财务的 `/approvals/tasks` 都是 `total=0` |
-| 没轮到的高级别看不到，第 1 级过了才出现 | 第 2 级待办 `total=0` → 主管通过 → `current_step_order` 10→20 → 第 2 级 `total=1` |
-| 越级审批 403 且任务仍 `PENDING` | 拿第 4 级任务 id 直接 POST approve → `403`，回查 `status=PENDING`、`decided_by=NULL` |
-| 并发通过同一级的两个会签任务只推进一级 | `asyncio.gather` 两个 approve → 指针停在 `20`（不是 `30`）；先把"先读再写"的坑撞出来才修对 |
-| 两人同时通过同一任务：一个 200、一个 409 | `asyncio.gather` 两次 approve → `[200, 409]` |
-| 驳回 → 主单 `REJECTED` + 时间线有意见 | `request_status=REJECTED`，时间线含 `APPROVAL_REJECTED` 且 payload 里有驳回原文 |
-| 待办一次 JOIN 查完 | 3 条待办时统计 SQL 日志里的 SELECT 条数 ≤ 4（N+1 会是 7+） |
-| 全部通过 → `SOURCING` + `APPROVAL_COMPLETED` | 单级链通过后 `request_status=SOURCING`，时间线含 `APPROVAL_COMPLETED` |
-| 改策略不改代码，链路跟着变 | 阈值 1,000 元 → 10,000 元后，同样 5,000 元的申请从 2 级变 1 级 |
-| 历史申请仍能复现当时的策略 | `policy_snapshot` 里仍是提交那一刻的 5 步原件、`policy_version=1` |
-| 缺人 → 422 并说明哪一级 | 消息原文：`审批链第 order=20 级（DEPT_HEAD）…没有任何可用审批人`；且主单**回滚仍为草稿** |
-| `ALL` 会签 3 人 → 3 条任务、预分配、全过才算完 | 3 条 `assignee_id` 非空；前两人通过时 `step_completed=false`，第三人通过才推进 |
-| `SINGLE` 或签 3 人 → 1 条任务、任一人认领通过即完成 | 1 条 `assignee_id=NULL`；认领 200、第二人认领 403（已分配他人）、认领人通过 → `SOURCING` |
-| 无兜底 / 有死步骤的策略 → 422 | 两条都 422；死步骤那条报 `order=60 在任何探测金额下都不会被触发` |
-
-**验证入口**（都实跑过；**下面是 M6 当时的数字，最新数字见 M7 一节**）：
-
-```powershell
-cd backend;  .\.venv\Scripts\python.exe -m pytest -m ""         # 198 passed（M6 收尾时 187，内控修复后 +11）
-             .\.venv\Scripts\python.exe scripts\m6_smoke.py      # 18/18，对着真实服务
-cd ..;       node scripts\浏览器自检.mjs                          # 11/11
-             node scripts\m6-页面实测.mjs                         # 19/19，含截图
-cd backend;  .\.venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all   # 清实测数据（原 m6_page_cleanup.py 已并入）
-```
-
-> **本轮实测撞出 4 个真 bug，全都是"不会报错、只会算错"的那一类**，值得记下来：
->
-> 1. **bulk UPDATE 之后读对象拿到旧值**：`decide` 用条件更新改了库，会话里缓存的
->    对象却没刷新，于是"判这一级是否完成"永远判"还没完"、指针永不推进。
->    连带发现 **`select(Model.col)` 也会经过身份映射** —— 必须 `populate_existing=True`。
-> 2. **每个请求一个会话，看不到别的事务未提交的改动**：两人同时通过同一级的两个会签任务时，
->    双方都看到对方还是 `PENDING`，于是**谁都不推进指针**。修法是在流那一行取行锁
->    （`SELECT … FOR UPDATE`），把"判定 + 推进"变成串行临界区。
-> 3. **同事务内多条事件的时间戳完全相同**（PostgreSQL `now()` 是事务开始时间），
->    时间线顺序退化成 UUID 随机比较 —— 实测出现过提交与建链两条事件顺序颠倒。
->    改成应用侧取微秒时间戳。
-> 4. **页面里写了 Markdown 的 `**…**`**（那是 JSX），星号被原样渲染出来。
-
-### M6 之后的补充修复（2026-10-03，同一阶段的收尾）
-
-M6 验收全过之后，做内控对账时发现**职责分离（SoD）这一整类要求从未被设计过**，
-实跑复现了"申请人能批掉自己的申请"。修复与原验收是两件事，记在这里：
-
-- **自审自批 → 三层拦截**：建链时剔除提交人（`exclude_requester`，该级只剩他则提交时 422
-  `SELF_APPROVAL_NOT_ALLOWED`）＋ 待办查询 `requester_id != actor_id`（挡**或签**）＋
-  `decide`/`claim` 的 SQL 守卫与 403。
-  → **注意**：只做第一层是不够的 —— 或签任务 `assignee_id` 为 NULL、只按角色可见，
-  第一层挡不住它。这一点是写测试时才暴露出来的。
-- **供应商列表收口 → 主数据接口整体收口**：`/api/v1/suppliers` 从公开改为要求登录、`only_active`
-  客户端参数收掉；同一轮把 `/api/v1/budgets/mine`（部门改从登录态推导）、`/api/v1/departments`、
-  `/api/v1/categories`、`/api/v1/categories/{id}`（它会把**整份审批策略**带出来）一并收口。
-- 新增测试 10 条（纯函数 5 + 集成 5），**全量 187 → 197 passed**；
-  随后主数据接口收口（下表第 13 条）再 +1，**累计 198 passed**。
-- 依据、对账与八条定稿口径见 [`docs/采购内控对照.md`](docs/采购内控对照.md)；
-  规则写进 [`docs/业务规则.md`](docs/业务规则.md) 第 9、10 条。
-
-### M6 之后的第二次补充修复（M9 期间发现，2026-10-04）
-
-上面那次修的是**同一部门内**的自审自批。这次是**跨部门**的同类问题：
-
-**`DEPT_MANAGER` / `DEPT_HEAD` 是部门级角色，但"办的时候"只校验角色名** ——
-财务部的部门负责人能看到、也能批掉行政部那张单子的「部门负责人」那一级。
-建链时按部门挑人、办事时看角色名，**两处判据不一致**。
-
-修法与证据见 M9 一节的「已修：审批待办与审批决定缺部门范围」。
-一句话概括：`list_todo` 与 `_assert_can_act` 都补上部门范围（复用
-`domain/permissions.resolve_request_scope`），**会签那一支刻意不加**（候选人本来就是
-按部门挑的）。全量 **313 → 316 passed**。
-
-
-## M7 · 预算并发预留 ★ ✅ 2026-10-04
-
-全部通过。**证据**（可复核）：
-
-| 验收项 | 实测依据 |
-| --- | --- |
-| 总额 1000 元时并发提交两笔 800 元，只有一笔成功，另一笔 422 | `test_api_budget.py::test_concurrent_submits_never_overdraw`：`asyncio.gather` 两个提交 → `[200, 422]`，`BUDGET_INSUFFICIENT` 文案带"可用 20000 分 / 需要 80000 分"；库里 `reserved=80000`；失败那笔**整体回滚**（仍是草稿、`budget_id` 为空、无流水） |
-| 驳回后可用额度恢复 | `test_reject_releases_the_reservation`：驳回后 `reserved` 归零，流水 `[RESERVE 80000, RELEASE 80000]` |
-| 撤回也要释放 | `test_withdraw_releases_the_reservation`：同上（三个释放入口：驳回 / 撤回 / 付款结转） |
-| `budget_transactions` 三类流水齐全 | `test_ledger_covers_all_three_kinds_and_sums_to_zero`；页面上也能看（`GET /api/v1/budgets/transactions` + 「预算看板」卡片） |
-| 同一申请重放不产生第二条 `RESERVE` | `test_idempotent_replay_does_not_reserve_twice`：同键重放响应逐字节相同、流水仍只有一条；直接调仓库再预留一次会撞 `UNIQUE(request_id, kind)` → 409 |
-| 申请 1000 元、实付 900 元：`amount_spent` +900、预留归零、总额不变 | 同一条用例：`{"total": 100000, "reserved": 0, "spent": 90000}` |
-| 三类流水相加（RESERVE − RELEASE − SPEND）= 0 | 同上：`[(RESERVE,100000),(SPEND,90000),(RELEASE,10000)]` → 归零 |
-| 并发测试连跑 20 次稳定 | 单条用例连跑 20 轮：**20/20 通过**（失败轮次为空） |
-| 全量回归 | `pytest -m ""` → **222 passed**（198 + 纯函数 14 + 集成 10）；ruff / mypy 干净；三条分层自查无输出 |
-| 前端 | `tsc --noEmit` 无错误 / `vitest` 14 passed / `npm run build` 通过 |
-| 浏览器 | 自检 **12/12**（新增 A7：预算看板列出预算与可用额）；`m6-页面实测.mjs` **20/20**（新增"先配预算再提交"一步） |
-| 真实链路 | 以 `requester` 提交 `PR-2026-DA3A9C82`（800 元）→ 库里 `RESERVE 80000`；办公用品可用 10000000 → 9920000 分；看板实时显示 已预留 ¥800.00 / 可用 ¥149,200.00 |
-
-**验证入口**（都实跑过）：
-
-```powershell
-cd backend;  .\.venv\Scripts\python.exe -m pytest -m ""                    # 222 passed
-             .\.venv\Scripts\python.exe -m pytest tests/test_api_budget.py -m integration -q   # 10 passed
-             .\.venv\Scripts\python.exe scripts\m6_smoke.py                # 19/19，对着真实服务
-cd ..;       node scripts\浏览器自检.mjs                                       # 12/12
-             node scripts\m6-页面实测.mjs                                      # 20/20，含截图
-cd backend;  .\.venv\Scripts\python.exe scripts\testdata_cleanup.py --scope all   # 清测试数据
-```
-
-> **本阶段新增的三件事**（验收清单之外，但都是这一步必须一起做的）：
->
-> 1. **迁移 `0007` 建 `budget_transactions`**：`UNIQUE(request_id, kind)` 挡"重试重复扣钱"，
->    `amount > 0`；`budget_id` 用 RESTRICT（有流水的预算行不许被删）、
->    `request_id` 用 CASCADE（流水是申请的从属数据）。
-> 2. **"计划外"口径落地**（2026-10-03 定稿）：该部门 × 品类 × 年度**根本没有预算行 → 422**
->    （`NO_BUDGET`），与"超预算"同一个处置 —— 先配 / 调预算再重新提交。**失败关闭**，不留静默放行。
->    `budget_id` 在提交那一次条件更新里**一起写死**（此后部门 / 品类变更都不影响它）。
-> 3. **只读预算看板**（`FINANCE` + `ADMIN`）：`GET /api/v1/budgets` 带部门名与品类名、
->    `GET /api/v1/budgets/transactions` 带申请单号；页面 `/budgets` 有合计、使用率条与流水。
->    **看钱与改钱分开**：改预算仍然只走 `/api/v1/admin/budgets`。
->
-> **踩到的坑（一个，但是老坑的新形态）**：并发失败的那一方如果拿**本次请求开始时读到的**
-> 预算数字去解释原因，会得出"钱明明够啊"的结论，422 于是退化成一句含糊的 409（实测撞到）。
-> 修法是**失败后强制重读**（`select(...).execution_options(populate_existing=True)`）再算差额 ——
-> 判定始终只由条件更新做，重读只用来把话说清楚。这与 M5「条件更新后回读旧对象」是同一类问题。
-
-> **付款结转的调用方在 M10**：`BudgetRepository.settle()`（`SPEND(实付) + RELEASE(预留 − 实付)`）
-> 已经写好并被集成测试钉住，M10 的付款接口直接调它，**不要再写第二份算术**。
-
-## M8 · 回归验收 ✅ 2026-10-04
-
-> **这不是新功能阶段**，而是"回头把已经做完的东西整体再撞一遍"的验收关口。
-> 放在 M7 之后是刻意的：此时项目已经有了账目（预算流水）、有了权限边界、
-> 也有了跨模块的数据流，**接缝最多、最适合整体验一次**；再往后堆功能，
-> 出问题时要排查的范围只会更大。
-
-### 一条命令的回归入口 ✅
-
-```powershell
-cd D:\procurement-app
-.\scripts\回归验收.ps1        # 退出码 0 = 全过；失败会停在那一步并打印原始输出
-```
-
-固定跑 11 步（**没有任何开关** —— 有开关就一定会出现"这次少跑一项"）：
-
-| # | 步骤 | 本次实测 |
-| --- | --- | --- |
-| 1 | 三条分层自查（应无输出） | ✅ 命中 0 处 |
-| 2 | 后端全量 `pytest -m ""`（**不跳集成档**） | ✅ **222 passed** in 37.44s |
-| 3 | `ruff check app tests scripts` + `mypy app` | ✅ All checks passed / 48 files |
-| 4 | `npx tsc --noEmit` | ✅ 无错误 |
-| 5 | `npx vitest run` | ✅ 14 passed |
-| 6 | `npm run build` | ✅ built in 755ms（272.81 KB / gzip 84.17） |
-| 7 | 确保前后端在跑（不在就调 `start.ps1`，最多等 90s） | ✅ 都已在跑 |
-| 8 | `backend\scripts\m6_smoke.py`（真实服务 19 项） | ✅ 19/19 |
-| 9 | `backend\scripts\regression_probes.py`（**新增**：静默失败 3 条 + 接缝 4 条） | ✅ 14/14 |
-| 10 | `scripts\浏览器自检.mjs`（无窗口 Edge 12 项） | ✅ 12/12 |
-| 11 | `testdata_cleanup.py --scope all`（清理 + 残留回查） | ✅ 干净（残留 0） |
-
-> **2026-10-04 修复排序退化后复跑**（同一入口、同一 11 步）：仍然**退出码 0**，
-> 第 2 步 **222 passed in 40.76s**，其余各步数字不变（冒烟 19/19、探针 14/14、自检 12/12、残留 0）。
-> 也就是说：**这次修复没有把任何一项验收撞坏**，而这次复跑的意义在于——
-> 上面那张"首次实测"表是在**回归入口自身那个假通过缺陷**存在时得到的，
-> 下面这次才是"判定修好之后"的真实结论。
-
-### 历史验收全量复跑（M0–M7）✅
-
-| 阶段 | 复跑方式与依据 |
-| --- | --- |
-| **M0** | 现场：PostgreSQL **16.15** / pgvector **0.8.6**；`/health/live` → `{"status":"ok"}`、`/health/ready` → `{"status":"ok","database":"up"}`、`/health/db` 打印版本；前端 5173 → HTTP 200（Vite 已注入客户端）；容器 `procurement-db Up 34 minutes (healthy)`；三份设计产物仍在 `docs/` |
-| **M1** | 现场：**重启后数据还在** —— 服务今天 10:0x 重启过，2026-10-02 建的供应商 `001/002`、2026-10-03 建的两条申请仍能查到；`alembic upgrade head` **连跑两次无报错**，`current` 停在 `ea2846f5497f (head)`；重复 `code` → **409**；浏览器页面显示供应商（自检 A 组） |
-| **M2** | 测试：`test_api_master_data.py`（16 条）+ `test_rules.py`（16 条）覆盖七条 422（`BOSS` 角色 / 漏 `_fen` / 无兜底 / 浮点阈值 / `order` 重复 / 死步骤）；**元⇄分三处一致**由探针接缝②现场验（请求体 100000 → 响应 100000 → 库里 100000）+ 自检 C3（界面填 1000 元 → 列表 ¥1,000.00） |
-| **M3** | 测试：`test_api_auth.py`（19 条）覆盖 8 角色登录 / 密码错 401 / 连错 5 次第 6 次 429 / 冻结即失效 / refresh Cookie 的 `Path` / 库里无原始口令。**现场补验状态码**：未登录 → **401**；手改 Cookie → **401**；`requester` 调 `/admin/suppliers`、`/admin/categories`、`/admin/budgets` → **403 / 403 / 403**，`admin` 调同样的路径 → **200**（4 / 3 / 2 条） |
-| **M4** | 现场：`@theme` 令牌仍在 `index.css`（2 处），页面里写死色号 **0 处**，`components/ui.tsx` 在、旧的 `pages/admin/_ui.tsx` **已不存在**，字体栈显式列了西文 + 中文；自检 A4（侧边栏账号与 `/auth/me` 一致、管理员菜单齐全，含 M7 的「预算看板」）；**已登录打开 `/login` 会跳回 `/`** —— 浏览器实测 `location.pathname === "/"` 且页面上没有登录表单 |
-| **M5** | 测试：`test_api_requests.py`（17 条）+ `test_purchase_rules.py`（21 条）覆盖草稿/明细/`amount_total` 重算 / 旧 `version` 409 / 同键重放 / 并发同键 / 提交后两条事件 / 换 id 404；探针接缝③④现场复验事件顺序与幂等重放 |
-| **M6** | 测试：`test_api_approvals.py`（22 条）覆盖四档金额 → 1/2/4/5、当前级可见性、越级 403 且仍 `PENDING`、并发推进只走一级、两人同任务 200/409、驳回、SOURCING、改策略不改代码、`policy_snapshot`、缺人 422、会签/或签、**待办一次 JOIN（SELECT ≤ 4）**；`m6_smoke.py` 19/19 对着真接口再走一遍 |
-| **M7** | 测试：`test_api_budget.py`（10 条）+ `test_budget_policy.py`（14 条）覆盖并发只有一笔成功、驳回/撤回释放、重放不重复预留、1000/900 结转与三类流水归零、计划外 422、看板权限；**并发用例连跑 20 次 → 20/20** |
-
-### 三条"静默失败"约束各撞一次 ✅（新增 `regression_probes.py`，14 项全过）
-
-| 约束 | 怎么撞的 | 实测结果 |
-| --- | --- | --- |
-| **审批链不许为空** | 直连库造一个 `approval_policy = {}` 的品类（接口层会拦住这种策略，所以只能造历史脏数据）→ 用申请人身份提交 | **422 `EMPTY_APPROVAL_CHAIN`**，且主单**回滚仍为 `DRAFT`**（没留下半截审批链） |
-| **预留与实付差额必须显式释放** | 预留 800 元 → 撤回 → 读库 | 该申请占的额度 `reserved` 从 **80000 → 0**，流水 `[RESERVE 80000, RELEASE 80000]` **相加 = 0**，`amount_spent` 仍为 0（付款接口 M10 才做，"实付 < 预留"那条算术已由 M7 的集成测试钉住） |
-| **权限范围必须写进 `WHERE`** | 另一个部门的申请人拿 id 读/改我的申请 | 读 → **404**（本人 200）；改 → **404**（不是 403、更不是 200） |
-
-### 跨阶段接缝四条 ✅
-
-| 接缝 | 实测结果 |
-| --- | --- |
-| 登录 → 跳回原目标页 | 自检 A1/A2：未登录访问 `/admin/suppliers` → `/login`（cookie 数 0）；登录后**回到 `/admin/suppliers`** 而不是首页 |
-| 界面「元」→ 请求体「分」→ 库里「分」 | 自检 C3：界面填 1000 → 列表显示 ¥1,000.00；探针接缝②：请求体 100000 → 响应 100000 → 库里 `unit_price=100000`、`amount=100000` |
-| 事件条数与状态迁移一致 | 探针接缝③：提交后 3 条事件（`REQUEST_CREATED` / `REQUEST_SUBMITTED` / `APPROVAL_STARTED`），其中**恰好两条状态迁移**（`None → DRAFT`、`DRAFT → IN_APPROVAL`）—— 第三条 `from == to`，说明"建链"没有伪装成状态变更 |
-| 同键重放不产生第二条记录 | 探针接缝④：同键两次提交**响应逐字节相同**（HTTP 200 / 200），事件仍 3 条、`budget_transactions` 仍只有一条 `RESERVE`；`test_api_budget.py` 另有一条撞 `UNIQUE(request_id, kind)` 的用例 |
-
-### 测试污染物零残留 ✅
-
-回归入口最后一步跑 `testdata_cleanup.py --scope all`：本次删除浏览器自检造的数据并**回查残留 = 0**（品类 / 部门 / 账号 / 申请四项全 0）。
-测试自身（222 条）全程自清理：跑完库里仍是**品类 3 / 部门 4 / 账号 7 / 预算 2 / 申请 3 / 流水 1**（其中申请 3 条 = 你自己的 2 条样例 + M7 演示的 1 条）。
-
-### 本轮回归的结论与遗留
-
-- **没有发现功能退化**：M0–M7 的验收项在自动化与现场复跑下全部通过，没有一条降级。
-- **当轮修掉的三处**（都是"文档/卫生"层面，与功能无关）：
-  1. `AGENTS.md` 第 4 节的 ruff 范围补上 `scripts`（那个目录现在有真代码）；
-  2. 5 处注释里的阶段号过期（附件 M7→**M9**、打包 M10→**M12**）；
-  3. `pip-*` 残留目录 19 个（0.95 MB）按前缀核对绝对路径后删除，复查 0 个。
-- **遗留问题已分类**（详见 `Development progress.md` 的 M8 四问与各阶段"真债"表）：
-  - **有意留的**：付款结转的调用方在 M10；`audit_logs` 与 M10 的 7 张表待建；驳回只做终止式；看板无分页。
-  - **真债三条**：① `application/coordinators/` 仍直接 import `app.database`（分层不够干净，等组合根收口）；② **没有建号 HTTP 端点**（脚本直连库建号，回归期间再次确认这是脚本的硬依赖）；③ 被拒的尝试仍未留痕（M8 之后补独立审计事件表）。
-
-
-## M9 · 附件与时间线 ✅ 2026-10-04
-
-> **状态**：后端（六步校验 / UUID 落盘 / 鉴权下载）与前端（`RequestTimeline` /
-> `AttachmentSection`）都已完成，验收在接口层与页面层各过一遍。
-
-### 新增的东西
-
-| 位置 | 是什么 | 为什么单独一个文件 |
-| --- | --- | --- |
-| `domain/attachments.py` | 六步校验的**规则**（大小 / 类型 / magic bytes / 解码 / 摘要） | 纯函数、不依赖解码库，可用替身解码器毫秒级测完 |
-| `infrastructure/image_probe.py` | 真解码器（Pillow） | **全项目唯一 import Pillow 的地方**；domain 通过回调拿"能不能解码" |
-| `infrastructure/object_store.py` | 本地对象存储 | UUID 键 + 两层目录；磁盘上永不用用户文件名 |
-| `infrastructure/records/attachment.py` | `attachments` 表 | 从属数据、关注点与主单/审批表不同 |
-| `infrastructure/repositories/attachment_repo.py` | 数据访问 | 只 `flush()`；**刻意不提供物理删除**，只有 `soft_delete` |
-| `boundaries/http/attachments.py` | 三条路由 | 上传 / 列表 / 下载（下载强制 `attachment` + `nosniff`） |
-| 迁移 `b1c02cfdf8e5` | `attachments` 表 | 人工核对过：CHECK ×2、外键 ×2、唯一键、两个索引都生成到了 |
-
-### 验收项逐条对账 ✅（9/9）
-
-| # | 验收项 | 实测 |
-| --- | --- | --- |
-| 1 | 上传 PDF 成功，返回附件 id | ✅ `201` + 附件 id；列表接口能查到同一条（`test_upload_pdf_returns_id_and_is_listed`） |
-| 2 | 上传 11 MB → 422 | ✅ `422 FILE_TOO_LARGE`，且**落盘目录仍然为空**（先校验、后落盘） |
-| 3 | 改名成 `.pdf` 的 exe → 422 | ✅ `422 MAGIC_BYTES_MISMATCH`（PE 头 `MZ` 露馅） |
-| 4 | 文件头是 PNG、内容非图片 → 422 | ✅ `422 IMAGE_DECODE_FAILED`（第 5 步真解码拦住） |
-| 5 | 20000×20000 PNG → 422（压缩炸弹） | ✅ `422 IMAGE_TOO_LARGE`：改 IHDR 尺寸造出"文件几百字节、解出来 4 亿像素" |
-| 6 | 越权下载 → **403** | ✅ 外部门账号 `403 FORBIDDEN`（本人 200）—— 附件存在但看不到它挂的申请 |
-| 7 | 直接访问 `/uploads/<文件名>` 拿不到 | ✅ `404`；登录后照旧 404；**拿到真实存储文件名也一样 404** |
-| 8 | 下载带 `Content-Disposition: attachment` | ✅ 中文名走 `filename*=UTF-8''…`，另有 ASCII 兜底；`X-Content-Type-Options: nosniff` |
-| 9 | 时间线按正序展示全部事件 | ✅ 附件事件 `ATTACHMENT_ADDED` 进时间线且**不改变状态**（`from == to`）；连传 5 个附件，顺序 = 上传顺序（这条正是 M8 修的排序退化最容易复发的场景，现在由 `seq` 保证） |
-
-### 实现里三个"想清楚才敢写"的点
-
-1. **磁盘与数据库的一致性**：顺序是"先发键 → 再落盘 → 后写库"。
-   `ObjectStore.new_key()` 单独存在就是为了这一步 —— 写库失败时手里得有键才能把文件删掉。
-   反过来先写库的话，会留下"库里有记录、文件不存在"的附件，点下载必然 500，而且没人知道有多少条。
-2. **`Content-Type` 只做兜底、不做判定**：`python-multipart` 对没带类型的 multipart 部分
-   会填 `application/octet-stream`，`curl -F`、脚本客户端对 `.pdf` 也常送它。
-   所以第 3 步加了**扩展名兜底**（详见下面"类型兜底"一节）——
-   但兜底只补"按哪种类型核对"，第 4、5 步一步都不会少。
-3. **`verify()` 不够，必须再 `load()` 一次**：本机实测五种损坏构造文件，
-   `verify()` 拦不住"截断的数据流"（PNG 只校验各 chunk 的 CRC，JPEG 的扫描数据它根本没碰）。
-   那次实测结果直接写进了 `image_probe.py` 的模块注释，并由 `test_image_probe.py` 钉住。
-
-### 类型兜底：扩展名只补全声明，绝不代替校验（2026-10-04 追加）
-
-用户点名的规则，落地在 `domain/attachments.py`：
-
-```
-content_type 缺失 或 = application/octet-stream
-        ↓  只在这一种情况下启用
-按扩展名补全：.pdf → application/pdf；.jpg/.jpeg → image/jpeg；.png → image/png
-             其他扩展名 → 422（MISSING_CONTENT_TYPE）
-        ↓
-继续原有 magic bytes 校验（第 4 步）
-        ↓
-图片继续真实解码（第 5 步）
-```
-
-**为什么需要它**：`application/octet-stream` 不是"另一种类型"，而是"**没告诉我**"——
-`python-multipart` 对没带类型的部分填它，`curl -F` 与脚本客户端对 PDF 也送它。
-把它当"声明了别的类型"拒掉，挡掉的是**工具**而不是攻击者（攻击者会老实写
-`application/pdf`，那正是我们要的诚实声明）。
-
-**为什么它不是漏洞**：扩展名只回答"打算按哪种类型去核对内容"，不回答"内容是不是这种类型"。
-补出来的类型照样要过文件头与真解码，`evil.exe` 改名成 `evil.pdf` 依然 422。
-代码上这也是**分开的两件事**：`infer_type_from_filename` 只定类型，
-`_check_magic_bytes` / `_check_image` 只管核对。
-
-| 用例 | 实测 |
-| --- | --- |
-| 声明 octet-stream + 真 PDF | ✅ `201`，落库类型是**补出来的** `application/pdf`；事件快照里记了 `type_inferred: true` |
-| 声明 octet-stream + `evil.exe` 改名 `evil.pdf` | ✅ `422 MAGIC_BYTES_MISMATCH`（补全没有绕过核对） |
-| 声明 octet-stream + 假 PNG 内容 | ✅ `422 IMAGE_DECODE_FAILED` |
-| 声明 octet-stream + `.bin`（补不出来） | ✅ `422 MISSING_CONTENT_TYPE`（不猜） |
-| 声明了**具体**类型（`application/pdf`）但内容是 PNG | ✅ `422 MAGIC_BYTES_MISMATCH`（具体声明优先于扩展名） |
-
-单测 12 条 + 集成 4 条，含边界（大小写扩展名、只有扩展名没有主名的 `.pdf`、`a.tar.gz` 只看最后一段）。
-
-### 前端三个组件（2026-10-04 完成，M9 就此收口）
-
-| 组件 | 数据来源 | 回答的问题 |
-| --- | --- | --- |
-| `components/RequestTimeline.tsx` | `request_events` | 这笔申请**经历过什么**（含上传附件，将来的询价/收货/付款） |
-| `components/ApprovalTimeline.tsx`（M6 已有，未改） | `approval_tasks` + `policy_snapshot` | 现在**卡在谁那里**、还有几级 |
-| `components/AttachmentSection.tsx` | 附件三接口 | 上传（用途 + 选文件）、列表、下载 |
-
-三个刻意的取舍：
-
-1. **两个时间轴是两个组件、两个分区**：数据来源不同、语义不同（一个会变、一个只追加），
-   计划里明确要求别混 —— 混了以后 M10 想加"付款完成"就无处安放（它不是审批链上的一级）。
-   `RequestTimeline` **不自己排序**：后端按 `seq` 正序给，前端再排一次等于把保证复制一份。
-2. **下载走 `fetch` + Blob，不用 `<a href>`**：直接指过去会在新标签页里显示一段 JSON，
-   用户只看到"无权访问"而不知道发生了什么；走 fetch 还能复用客户端的 401 → 续期 → 重放，
-   并且能把 403/404 的**原文**显示出来。
-3. **前端预检只是体验，边界永远在后端**：大小与扩展名在页面上当场提示（不发请求），
-   但改个扩展名就能绕过它 —— 后端六步校验才是边界（页面实测里两条都验了）。
-
-### 页面验收（`scripts\m6-页面实测.mjs` 20 → **38 项，38/38 通过**）
-
-新增 18 项，其中 5 项是**真的在页面上操作**而不是调接口
-（造真实 `FileList` + 派发 `change`、点按钮、接原生 `confirm`、用 CDP 限速）：
-
-| 新增验收 | 实测 |
-| --- | --- |
-| 详情页同时有两个时间轴（事件流水 + 审批进度） | ✅ 事件 5 条，两个组件都在 |
-| 事件流水按正序：创建草稿 → 提交 → 生成审批链 → 认领 → 审批通过 | ✅ 顺序与写入一致 |
-| 附件区有 5 种用途 + 上传按钮 | ✅ 报价单/合同/发票/验收单/其他 |
-| **在页面上选文件 → 上传成功 → 列表出现**（造真实 `FileList` + 派发 `change`，走 React 事件） | ✅ 列表显示「报价单 页面实测报价单.pdf 43 B … 下载 删除」 |
-| 上传后时间线多出「上传附件」 | ✅ 事件 5 → 6，末条说明了文件名与大小 |
-| **限速上传 400 KB → 进度条出现且百分比在增长** | ✅ 采样 `[4, 8, 12, 16, 20, 24, 28, 32]`（CDP 把上行限到 100 KB/s 才观察得到） |
-| **点「删除」先弹二次确认** | ✅ 对话框首行=「确定删除附件「页面实测报价单.pdf」吗？」 |
-| 确认后附件从列表消失 | ✅ 软删除：列表没了、下载 404、**磁盘文件与行都还在** |
-| 删除在时间线上留痕 | ✅ 末条=「删除附件 页面实测报价单.pdf（43 B）」，「上传附件」那条仍在 |
-| 时间线只多出「删除附件」这一条 | ✅ 7 → 8 |
-| 选 11 MB → 页面当场提示「超过 10 MB」 | ✅ 不发请求 |
-| 选 `.exe` → 当场提示只接受 PDF/JPG/PNG | ✅ |
-| 改名成 `.pdf` 的 exe → 后端 422 `MAGIC_BYTES_MISMATCH` | ✅ 页面预检与后端边界**两条都验** |
-| octet-stream 兜底没有绕过内容校验 | ✅ 同样 422 `MAGIC_BYTES_MISMATCH` |
-
-> 光看"上传按钮点了没反应"是查不出问题的：这一轮实测撞到并修掉了一个真 bug ——
-> `fetch` 里写 `Content-Type: ""` **不等于"没设置"**，浏览器会真的发一个空头，
-> multipart 解析失败，后端报 `422 file: Field required`（指错方向）。
-> 正确做法是 `Headers.delete("Content-Type")`。三种写法对比实测：
-> `""` → 422、不传 headers → 201、`delete` → 201。已写进 `api/client.ts` 的 `send()`。
->
-> 跨部门 403（看不到就删不掉）**不在页面实测里验**：种子里的 7 个演示账号中，
-> 只有 `DEPT_MANAGER` / `DEPT_HEAD` 是部门级可见，而这两个都在行政部 ——
-> 页面实测的环境里**造不出"看不到这张单子"的账号**（采购/财务/管理员都是全公司可见，
-> 他们删得掉是**对的**）。这条由集成测试
-> `test_delete_by_an_outsider_is_403_and_the_attachment_survives` 覆盖。
-
-### 删除端点与上传进度条（2026-10-04 追加，用户点名）
-
-**删除**（`DELETE /api/v1/attachments/{id}` → **204**）：
-
-| 决定 | 为什么 |
-| --- | --- |
-| **软删除**（只写 `deleted_at`，磁盘文件不删） | 附件是审计证据。物理删除会让"当时到底附了什么"永远查不出来 |
-| **删除也写时间线事件** `ATTACHMENT_REMOVED` | 只标记不写事件的话时间线上一片安静，"这份合同怎么没了"就查不出来。事件里带文件名与大小快照 |
-| 权限与读取**同一条判定** | 看得到这张申请就能删；看不到 → **403**；不存在/已删 → **404**（不是 409：重试天然幂等） |
-| 界面加**二次确认** | 没有撤销入口的操作不能点一下就消失 |
-
-**上传进度条**：
-
-| 决定 | 为什么 |
-| --- | --- |
-| 走 `XMLHttpRequest` 而不是 `fetch` | **`fetch` 没有上传进度**，进度条无从谈起 |
-| 进度用"订阅"而不是"回调参数" | 进度是随时间连续变化的值；包成 API 参数会让整个客户端为一次上传破例 |
-| 到 100% 时文案写「校验中…」 | 100% 只说明**字节发出去了**，服务端还有校验与落盘那一段 —— 措辞要诚实 |
-| 令牌在卸载时统一退订 | 注册表按令牌存监听者，不退订就是内存泄漏 |
-
-新增测试：后端 **+6**（204 / 幂等 404 / 越权 403 且附件仍在 / 时间线留痕 / 未知 id 404 / 未登录 401），
-页面实测 **+6**。全量 `pytest` 由 307 → **313 passed**。
-
-### 新增测试（222 → **313**，+91）
-
-| 文件 | 条数 | 覆盖 |
-| --- | --- | --- |
-| `tests/test_attachment_rules.py` | 53（unit） | 六步校验的每一种绕过手法 + 类型兜底 12 条（含边界：正好 10 MB 放行、正好 5000 万像素放行、`image/svg+xml` 拒绝） |
-| `tests/test_image_probe.py` | 9（unit） | 真解码器：合法图能解、五类损坏文件全拒、Pillow 的炸弹阈值必须高于本项目上限 |
-| `tests/test_api_attachments.py` | 29（integration） | 9/9 验收表 + 类型兜底 4 条 + **删除端点 6 条** + 软删除 + 未登录 401 + 上传不动预算（接缝） |
-
-静态检查：`ruff` All checks passed / `mypy` 54 files 无问题 / 三条分层自查**各 0 处**
-（顺带把新文件里一处"注释里出现 `import Pillow` 字样"改成中文措辞，
-否则"应无输出"的自查会多一行噪音）。
-
-**对真实服务也验过一遍**（不只是进程内测试客户端）：`requester` 登录 → 上传真 PDF → `201`
-→ 下载回 35 字节、`content-type: application/pdf`、`content-disposition: attachment; … filename*=UTF-8''`
-→ 改 id / 未登录 / 直连 `/uploads/` 全部 404 → 时间线第 4 条是 `ATTACHMENT_ADDED`（`IN_APPROVAL → IN_APPROVAL`）。
-探针数据（1 条附件 + 1 条事件 + 磁盘文件）已按 id 精确删除，`uploads/` 复查 0 个文件。
-
-### 还没做（M9 剩下的部分）
-
-- 无。M9 的验收项已全部在接口层与页面层各验一遍（见上表与"页面验收"一节）。
-
-### M9 收口核对
-
-| 收口动作 | 状态 |
-| --- | --- |
-| 验收逐条勾选 | ✅ 9/9（接口层）+ 页面层 18 项新增（`m6-页面实测.mjs` **38/38**） |
-| 四问总结写进 `Development progress.md` | ✅ |
-| 回归入口 | ✅ 退出码 0，11 步全绿，**316 passed** |
-| 三条分层自查 | ✅ 各 0 处 |
-| 垃圾清理（2026-10-04 追加） | ✅ `pytest-of-*` 目录树、`shot-*.png` 17 张（779 KB）已删；`.gitignore` 加两条兜底（`pytest-of-*/`、`backend/tmp*`、`tmp????????`） |
-
-### ✅ 已修：审批待办与审批决定**缺部门范围**（P1，2026-10-04 发现并修复）
-
-**这是一个真实的越权面，不是测试问题。**
-
-| 位置 | 修前的条件 | 缺什么 |
-| --- | --- | --- |
-| `approval_repo.list_todo` | 任务 PENDING + **当前级** + 我是预分配人 **或** 我持有该角色 + 提交人不是我 | **没有部门** |
-| `coordinators/approval._assert_can_act` | 提交人不是我 +（会签：必须是我）/（或签：**我持有该角色**） | **没有部门** |
-
-于是：**`DEPT_MANAGER` / `DEPT_HEAD` 是部门级角色，但"办的时候"只校验角色名** ——
-财务部的部门负责人能看到、也能批掉行政部那张单子的「部门负责人」那一级。
-建链时引擎明明按部门范围挑了人（`_department_scope`），**办的时候那条范围却丢了**。
-
-**为什么它平时不现形**：开发库里恰好没有"另一个部门停在同一级"的单子。
-一旦有（浏览器实测留下的单子就会），同一个角色名立刻跨部门通行 ——
-M9 期间那次"待办里多出 3 条"的失败，暴露的其实就是这个面，当时被我误记成"测试脏数据"。
-
-**改法**（判据不新造，复用 `domain/permissions.resolve_request_scope`：
-
-- `list_todo` 加 `*_scope_conditions(scope, actor_id=...)` —— **与采购仓库同一个函数**
-  （权限必须写进 WHERE 的落点在 `purchase_repo._scope_conditions`，抄一份就会漂移）；
-- `_assert_can_act` 在**或签那一支**补部门判定。
-  **会签那一支刻意不加**：会签候选人是建链时按部门挑的，再卡一次只会制造
-  "被指派了却批不了"的死结 —— 这一条写在代码注释里，免得以后有人"顺手补齐"；
-- 部门**只从登录态取**（`user.department_id`），不接受客户端参数；
-- `get_task_detail`（任务详情）同步收紧：列表里看不到的，换个 id 也点不开。
-
-**验收**（三条新用例，先写成"应当失败"再改实现）：
-
-| 用例 | 修前 | 修后 |
-| --- | --- | --- |
-| 别的部门负责人**看不到**本部门待办 | ❌ 看得到 | ✅ 看不到 |
-| 换个 id 直接 `approve` → **403**，且任务仍 PENDING、指针不动 | ❌ 200（批掉了） | ✅ 403 |
-| **反向保险**：本部门负责人照常批得了（防"一刀切挡死"） | ✅ | ✅ |
-
-全量 `pytest` 313 → **316 passed**；回归入口退出码 0；页面实测 38/38（UI 无回归）。
-
-> 顺带把 `test_todo_list_is_one_query` 从"数固定条数"改成
-> **比较 3 条待办与 6 条待办的 SELECT 条数是否相等** ——
-> 加部门树那一条 SELECT 之后，原来的魔法数字（≤4）就站不住了，
-> 而"条数不随行数增长"才是"没有 N+1"的真正证据。
-
-
-## M10 · 履约链 ✅ 四个子阶段全部完成（2026-10-05）
-
-> 计划要求**拆成四个子阶段、每个单独验收**（8.1 询价与定标 / 8.2 订单与收货 /
-> 8.3 发票与三单匹配 / 8.4 付款与归档）。下面是 8.1，8.2 与 8.3 在同一节后面。
-
-### 定稿：两处文档没写清的口径（2026-10-05 定，开工前问清）
-
-开工前发现文档有两处**没定义**，按规范没有猜，先问后做：
-
-| # | 问题 | 定成什么 | 为什么 |
+| **M0** | 容器起来、`psql` 能连（PostgreSQL 16.15 / pgvector 0.8.6）；三个健康检查通；前后端都在跑；三份设计产物齐（ER 图 / 业务规则 / 金额-审批链对照表） |
+| **M1** | 供应商走通 表→ORM→仓库→协调者→路由→页面；**重复 `code` → 409** 且错误体统一；**重启后端数据还在**；`alembic upgrade head` 可重复执行 |
+| **M2** | 四类主数据 + 三层校验前两层；七种 422（`role: "BOSS"` / 漏 `_fen` / 无零阈值兜底 / 浮点阈值 / `order` 重复 / 死步骤）；**界面元、库里分**（`1000` 元 → `100000` 分） |
+| **M3** | 8 角色都能登录、密码错 401；`REQUESTER` 调管理接口 **403**；改 Cookie → 401；**连错 5 次第 6 次 429**；冻结账号旧令牌立即失效；refresh Cookie 的 `Path` 限定；库里无原始口令 |
+| **M4** | 设计令牌集中在 `index.css` 的 `@theme`；页面里**写死色号 0 处**；侧边栏账号与 `/auth/me` 一致；已登录打开 `/login` 跳回目标页 |
+| **M5** | 草稿/明细/`amount_total` 由后端重算；旧 `version` → **409**；同键重放只产生一条；**并发同键恰好一个 200 一个 409**；空明细 422；撤回后不能再提交。补上 M3 挂账的两条：换 id 取别人申请 → **404**、部门经理看不到别部门 |
+| **M6** | 四档金额 → **1/2/4/5 个任务**；越级 403 且任务仍 `PENDING`；**并发通过同级的两个会签任务只推进一级**；两人同任务 `[200, 409]`；驳回 → `REJECTED` + 时间线；待办**一次 JOIN**（SELECT ≤ 4，N+1 会是 7+）；改策略不改代码；历史申请仍能复现当时策略（`policy_snapshot`）；缺人 → 422 并点名哪一级；`ALL` 会签 / `SINGLE` 或签都验过 |
+| **M7** | 总额 1000 元并发提交两笔 800 → `[200, 422]` 且失败那笔**整体回滚**；驳回/撤回各释放一次；重放不产生第二条 `RESERVE`；**1000 元预留、900 元实付 → `SPENT +900`、预留归零、三类流水相加为 0**；并发用例**连跑 20/20** |
+| **M8** | 回归入口固定 11 步（当时）退出码 0；M0–M7 **历史验收全量复跑**；**三条"静默失败"约束各撞一次**（空审批链 422 / 差额显式释放 / 权限进 `WHERE` 得 404）；跨阶段接缝 4 条；**测试污染物零残留** |
+| **M9** | 附件六步校验 9/9（含 11 MB 422、改名 exe 422、假 PNG 422、20000×20000 压缩炸弹 422）；**越权下载 403**；直连 `/uploads/` 404；下载带 `attachment` + `nosniff`；时间线正序且附件事件**不改状态**。另修一个**真实越权面**（见下） |
+
+### M9 期间修掉的真实越权面（**值得单独记住**）
+
+`DEPT_MANAGER` / `DEPT_HEAD` 是**部门级角色**，建链时引擎按部门挑人，
+但**"办的时候"只校验角色名** —— 财务部的部门负责人能看到、也能批掉行政部那张单子的「部门负责人」那一级。
+
+**它平时不现形，只因为开发库里恰好没有"另一个部门停在同一级"的单子**
+（可见性依赖数据巧合，而不是任何一道防线）。修法：`list_todo` 与 `_assert_can_act`
+都补上部门范围，复用 `resolve_request_scope`；**会签那一支刻意不加**（候选人本来就是按部门挑的）。
+全量 `pytest` 313 → **316 passed**。
+
+## M10 · 履约链 ✅ 四个子阶段全部完成（2026-10-05 后端 / 10-06 前端）
+
+| 子阶段 | 主单状态迁移 | 关键不变量 | 验收要点 |
 | --- | --- | --- | --- |
-| 1 | **比价线**（"金额超过比价线才要 3 家报价"）的值与位置 | **全局配置** `sourcing_threshold_fen`，默认 **1_000_000 分 = 1 万元** | 它是**制度参数**（控制起点），不是业务常量：定低了小额单也要询三家（吃掉采购工时），定高了丢掉议价。放全局配置是为了**规则可测** —— 纯函数把阈值当入参，测试不必造两套数据；按品类配会让同一规则变成"每品类一套数"，排障先得问"这个品类的线是多少"。1 万元是文档唯一出现过的数（领域设计 5.3「比如 10000 元」），照抄它不用改文档。**代价**：做不到"办公用品 1000 起、IT 5000 起"；真要分档时第一步是给 `categories` 加一列，而不是现在预留空壳 |
-| 2 | **报价状态词表**（业务规则 4 档 vs 实施计划 3 档，且用词不同） | 严格照业务规则：`SUBMITTED / EXPIRED / SELECTED / NOT_SELECTED` 落库（**砍掉 DRAFT**） | DRAFT 没有使用场景：询价是采购工作台上的连续动作，"先存个报价草稿"这一版用不上；留一个走不到的状态会让状态校验的测试失去意义（与 `state_machine.py`「不留走不到的状态」同一条纪律） |
+| **8.1 询价与定标** | `SOURCING → AWARDED` | ≥3 家有效报价（超比价线时）；成交单价 = 选中报价原值 | 只有 2 家且超线 → **422** 且提示"还差 1 家"、**不留半截状态**；补到 3 家成功；比价线**两侧都测**（`THRESHOLD − 1` 分就回到不要求）；过期报价与停用供应商**不算家数** |
+| **8.2 订单与收货** | `AWARDED → ORDERED → RECEIVED` | 订单金额 = Σ(成交单价 × 数量)，**由后端重算**；收齐才收货 | 超收 → **422** 且不留半截状态；全收齐 → 主单 `RECEIVED`；**订单金额 ≠ 申请金额是正常的**（询价压价，实测申请 330 元 → 订单 240 元），差额由 M7 的"显式释放"处理 |
+| **8.3 发票与匹配** | `RECEIVED → INVOICED` | 有效发票**求和**参与匹配；作废票不参与且号可复用 | 两张各 120 元正好等于订单 240 → `passed`（挡住"拿第一张去比"）；超容差列出 `expected`/`actual` 与人话；预检**只读**（连跑 3 次版本与事件数不变）；作废后同号可重登、全部作废报 `NO_INVOICE` |
+| **8.4 付款与归档** | `INVOICED → PAID → CLOSED` | 条件更新抢付款权；**差额显式释放**；`SPEND` + `RELEASE` 两笔流水 | 未收货就创建付款单 → **409**；超容差 → 422 且不留半截状态；**两人同时付款 `[200, 409]`**（`asyncio.gather` + **不同幂等键**）；`amount_spent` 只增加一次；全链路走通到 `CLOSED` |
 
-**`EXPIRED` 是唯一"随时间自己成立"的状态**，所以它需要有人去改它。项目里已有
-同源口径（供应商资质过期：**查询时过滤、不引定时任务**），这里落在**惰性结算**上：
-读比价表与定标时把"已过有效期却还写着 `SUBMITTED`"的行改成 `EXPIRED`。
-判定**只认时间**（`valid_until < now`），状态列只是这份判定的事后投影 ——
-投影可以落后一步，判定不会错。
+**状态机至此闭环**：12 个状态、每个都有真实代码会走到，`PARTIALLY_RECEIVED` 始终不在其中。
 
-### 8.1 询价与定标 ✅
-
-| 层次 | 产出 |
-| --- | --- |
-| `domain/sourcing_policy.py` | 纯函数：`is_effective`（有效报价）/ `check_awardable`（返回**问题列表**）/ `expired_ids` / `award_plan` / `deal_unit_price_fen` / `is_expired` |
-| 迁移 `415a3b8cd7d6` | `quotations` 表（含 `UNIQUE(request_id, supplier_id)` —— 它是"三家比价"的守门人） |
-| 迁移 `6d2e9a4c1f37` | 主单状态 CHECK 加 `AWARDED`（**这条是实测撞出来的**，见下） |
-| `application/coordinators/sourcing.py` | 队列 / 登记报价 / 比价表 / 定标（条件更新 + 同事务推主单 + 写事件 + 幂等） |
-| `boundaries/http/sourcing.py` | 四条路由：队列、登记报价、比价表、定标 |
-| `config.py` | 新增 `sourcing_threshold_fen`（配置项 4 → 5，仍是个位数） |
-
-**验收（8.1 的两条）**：
-
-| 验收项 | 实测 |
-| --- | --- |
-| 只有 2 家报价且金额超过比价线 → 定标 **422** | ✅ 提示含「至少需要 3 家 / 当前 2 家 / **还差 1 家**」，且**不留半截状态**（主单仍 `SOURCING`、报价仍 `SUBMITTED`） |
-| 补到 3 家 → 定标成功 | ✅ 选中者 `SELECTED`、其余 `NOT_SELECTED`、主单 `SOURCING → AWARDED`、成交单价 = 选中报价原值 |
-
-**比价线两侧都测了**（这是"阈值来自配置"的直接好处：测试把它当入参）：
-
-- 金额 **< 比价线**：一家报价也能定标（小额直采不必凑三家）；
-- 金额 **>= 比价线**：至少 3 家（**闭区间**，`THRESHOLD - 1` 分就回到不要求）；
-- **过期**的报价不算家数、**停用/资质过期**的供应商的报价也不算家数；
-- `valid_until = NULL`（长期有效）**不是**过期 —— 写反会让所有没填有效期的报价永远定不了标。
-
-**测试**：`test_sourcing_policy.py` **22 条**纯函数 + `test_api_sourcing.py` **20 条**集成（+ 状态机 3 条）。
-全量 `pytest` 316 → **361 passed**。
-
-### 8.1 期间撞出来的两个真问题（都记下来）
-
-**① 主单状态 CHECK 忘了加 `AWARDED` —— 报错却是"数据库暂不可用"**
-
-定标时撞 `ck_request_status_known`（那条 CHECK 还是 M6 的六个状态），
-经过应用层的 `SQLAlchemyError` 处理器之后，用户看到的是
-**503「数据库暂不可用，请稍后重试」** —— 完全指错方向（数据库好得很，
-只是白名单少一个值）。所以"新增状态"必须与"改 CHECK"同一次改动：
-模型里的 `KNOWN_REQUEST_STATUSES` 与迁移一起。已在两处注释里写死这条提醒。
-
-**② 惰性结算写完不提交 = 白写（而且是静默的）**
-
-`GET /requests/{id}/quotations` 里会顺手把过期报价结算掉 —— 但它**忘了提交**，
-请求结束时会话回滚，结算结果被丢掉。表现是"界面上永远看不到 `EXPIRED`"，
-而判定（只认时间）又是对的，于是库里那行一直写着 `SUBMITTED`，
-谁也说不清它到底算不算数。**读端点里做惰性写，就必须提交。**
-
-**③（同一类，第三次踩）条件更新之后回读要 `populate_existing=True`**
-
-`transition_status` / `mark_awarded` 都是 bulk UPDATE（`synchronize_session=False`），
-会话里那份对象仍是旧值，而它在身份映射里 —— 普通查询会把它原样还回来，
-于是响应显示"主单还是 SOURCING、选中的那家还是 SUBMITTED"，看起来像定标没生效。
-M5、M6 各踩过一次，这次一次踩了两处（主单 + 报价）。两个仓库的读方法都加了
-`populate_existing` 开关，注释里点明"刚做完 bulk UPDATE 就用它"。
-
-### ✅ 已修：报表口径（2026-10-05，用户点名）
-
-**问题**：`EXPIRED` 只在**有人结算**时才写进状态列。所以"直接读状态列做统计"是危险的
-—— 会数到"过期却写着 `SUBMITTED`"的行。判定（`is_effective`，只认时间）不受影响，
-但**任何按状态计数的统计会错**，而且错得悄无声息。
-
-**改法**：不去要求"每处都记得先结算"，而是把**结算 + 读**合成**唯一入口**：
-
-```python
-rows, facts = await coordinator.quotations_ready(request_id)
-#   先 expire_overdue（有改动就提交），再读 —— 只能用这一个口子
-```
-
-比价表与定标都改走它；装配也收进 `build_sourcing_coordinator`（边界层与测试**共用同一份**，
-测试要直接调协调者时不必再抄一遍 7 个依赖 —— 抄一遍就多一处会漂移的接线）。
-
-**代价与边界（写清楚）**：这仍然不是数据库级保证 —— 绕过协调者直接 `SELECT status`
-依然可能读到过时的行。但**所有应用内路径都过这个口子**，而"忘掉结算"从
-"每处都要记得"变成了"根本绕不过去"。数据量上来后可以把惰性结算换成
-"写入时算过期"或物化视图，**那个唯一入口不用变** —— 这正是把它单独拎出来的意义。
-
-**守门用例**：`test_settlement_is_idempotent_and_the_status_column_stays_truthful`
-断言两件事 —— ① 走入口之后状态列与 `is_effective` **一致**（先断言"不走入口时它确实过时"，
-把危险性也钉住）；② 重复走是**幂等**的。
-
-
-## M10 · 履约链（剩余子阶段）
-
-### 8.2 订单与收货 ✅（2026-10-05）
-
-| 层次 | 产出 |
-| --- | --- |
-| `domain/fulfillment.py` | 纯函数：`build_order_lines`（单价来源）/ `order_amount_fen` / `check_receipt` / `receipt_plan` / `is_fully_received` / `receipt_problems` |
-| 迁移 `9189664d8e56` | 4 张表（`purchase_orders` / `purchase_order_lines` / `goods_receipts` / `goods_receipt_lines`）+ **手工补**主单状态白名单加 `ORDERED` / `RECEIVED` |
-| `application/coordinators/fulfillment.py` | 待收货队列 / 下单 / 收货（条件更新 + 同事务推主单 + 写事件 + 幂等） |
-| `boundaries/http/fulfillment.py` | 五条路由：下单、按申请查订单、订单详情、待收货队列、收货登记 |
-
-**验收（8.2 的两条）**：
-
-| 验收项 | 实测 |
-| --- | --- |
-| 收货数量超过订单数量 → **422** | ✅ 提示含「实收 11 超过订单 10」，且**不留半截状态**（无收货单、订单仍 `ORDERED`、版本未推进） |
-| 全部收齐 → 主单 `RECEIVED` | ✅ 订单与主单一起变 `RECEIVED`，时间线记 `GOODS_RECEIVED` 且 `from_status=ORDERED → to_status=RECEIVED` |
-
-**订单金额口径**（8.2 最要紧的一条）：
-
-    订单金额 = Σ(明细行单价 × 数量)，由后端按明细**重算**，不接受客户端传总额
-    询价场景：明细行单价 = **定标成交单价**（整单统一）
-    直采场景：明细行单价 = 申请单价（`deal_unit_price_fen=None`）
-
-所以**订单金额 ≠ 申请金额是正常的**（询价压价之后订单总额通常更小），
-差额由 M7 的"实付小于预留则显式释放"处理。实测：申请 330 元、成交单价 20 元 → 订单 240 元。
-
-**⚠️ 一处我按文档纠正了自己的实现**：我一开始做了"收一半允许、主单停在 `ORDERED`"，
-跑测试时发现**订单状态没地方放**——`mark_order_received` 会把订单改成 `RECEIVED`，
-于是出现"订单已收货 + 主单还在 ORDERED"这种**模型禁止的组合**，而且走不到任何终态
-（再收一次会被"已经收过货"挡住）。查文档：部分收货明确在"第一版先砍掉这些"里
-（领域设计 935 / 1139 / 1159，ER 图 144）。所以改成 **没收齐当场 422**，
-并说清差哪几行、差多少（`明细「订书机」收 1 / 订 2`）。
-**砍功能，不砍纪律**：与其造出模型不允许的状态，不如当场拒绝。
-
-**测试**：`test_fulfillment_rules.py` **20 条**纯函数 + `test_api_fulfillment.py` **20 条**集成
-（+ 状态机 4 条）。全量 `pytest` 361 → **404 passed**。
-
-### 8.2 期间踩的坑（第四个同类）
-
-**条件更新之后回读 —— 第四次踩，这次一次踩两处。**
-
-`mark_order_received`（订单转已收货）与 `transition_status`（主单转已收货）都是
-bulk UPDATE（`synchronize_session=False`）。会话里那份对象仍是旧值，而它在身份映射里 ——
-于是**响应里"收齐了"显示成没收齐**、订单状态显示成 `ORDERED`（库里已经改了）。
-M5、M6、8.1 各踩过一次，8.2 又踩两处。两个仓库的读方法都带 `populate_existing` 开关，
-用例里"条件更新之后立刻回读"的地方一律显式传它。
-
-**另一处更隐蔽**：`receipt.fully_received` **不是表上的列**，是判定结果。
-我让读接口用 ORM 记录直接解析响应模型，Pydantic 退到字段默认值 `False` ——
-于是**同一张收货单，写接口说"收齐了"、读接口说"没收齐"**。
-修法：收货单响应体由协调者算好（`_receipt_payload`），读写两条路共用同一份；
-并且 `ReceiptOut.fully_received` **不给默认值** —— 少给一个字段就当场报错，
-而不是静默地给一个可能相反的值（这个标志是下游付款的闸门，说反了后果最重）。
-
-### 8.3 发票与三单匹配 ✅（2026-10-05）
-
-| 层次 | 产出 |
-| --- | --- |
-| `domain/settlement_policy.py` | 纯函数：`match_three_way`（附录 A.5）/ `tolerance_fen` / `precheck_three_way` / `document_supplier_consistent` |
-| 迁移 `6e360e408435` | `invoices` 表 + **手工补**主单状态白名单加 `INVOICED` |
-| `application/coordinators/settlement.py` | 登记发票 / 发票列表 / 待付款队列 / 三单匹配预检 |
-| `boundaries/http/settlement.py` | 四条路由：登记发票、发票列表、待付款队列、匹配预检 |
-
-**三处口径**（全部照文档，没有新决定）：
-
-| 口径 | 定成什么 | 出处 |
-| --- | --- | --- |
-| 匹配粒度 | **订单级**：`ordered_qty = SUM(订单明细数量)`、`invoice_amount_fen = SUM(所有发票)`、`accepted_qty = SUM(收货明细)`；发票供应商要**所有张都一致** | 实施计划 2412-2423、领域设计 1372 |
-| 容差 | `max(订单金额 × 2%, 50 元)`，比例与绝对值**取较大者** | 业务规则 171 |
-| 匹配时机 | **跑在"执行付款"（8.4）**；8.3 的预检接口**只读**，不做任何状态变更 | 实施计划 2425-2433 |
-
-**容差是怎么落的**：比例存成**万分比整数** `TOLERANCE_BP = 200`，全程整数乘除 ——
-项目硬约束禁止 float，而 `int(amount * 0.02)` 在 `0.02 × 2500` 上会得到
-`50.000000000000007`，恰好落在边界上。专门有一条用例
-（`test_tolerance_arithmetic_is_integer_and_has_no_float_error`）钉住它。
-比例部分**向下取整**（容差只可能偏小）—— 兜底方向选严的一侧。
-
-**验收（8.3 清单）**：
-
-| 验收项 | 实测 |
-| --- | --- |
-| 登记**两张**发票，匹配用的是**两张之和** | ✅ 订单 240 元、两张各 120 元 → 合计正好相等 → `passed`；单看任一张都差 120 元，所以这条同时挡住"拿第一张去比"的写法 |
-| 发票金额超容差 → 列出**具体差异** | ✅ 订单 240 元、容差 50 元、开票 300 元 → `AMOUNT_MISMATCH`，`expected=24000` / `actual=30000`，人话里同时给出"差 6000"与"容差 5000" |
-| 预检**只读** | ✅ 连跑 3 次：版本不变、事件数不变 |
-
-**测试**：`test_settlement_policy.py` **19 条**纯函数 + `test_api_settlement.py` **22 条**集成
-（+ 状态机 2 条）。全量 `pytest` 404 → **447 passed**。
-
-### 8.3 的三处设计取舍（都是"我改了 ER 图"）
-
-1. **`invoices` 不加 `matched` 列**（ER 图 473 行有）：三单匹配在"执行付款"那一刻**现算**，
-   结果是**问题列表**而不是布尔值。落库就成了"派生状态的缓存列" ——
-   而报告口径那个坑（按状态列统计、而状态列只在有人结算时才更新）正是同一类问题。
-2. **`invoices` 加 `attachment_id`**（ER 图没有）：实施计划 2405 行的接口签名里明确有"附件"，
-   而 ER 图列 `attachments` 用途时包含"发票"。两者合起来就是"发票要能挂附件"，
-   这一列有真实写入方。
-3. **`goods_receipt_lines` 不加 `received_quantity`**（见 8.2）：三单匹配只读验收合格数量，
-   "收了多少"没有任何一处会读它。
-
-### 8.3 期间的两处判断（值得记）
-
-**① "发票金额 vs 申请金额"是个陷阱。** 申请 5800 元、订单 240 元（询价压价）——
-拿申请金额当匹配基准，这笔单子会**一律判成不匹配**，而差额其实由 M7 的
-"实付小于预留则显式释放"处理（业务规则 178-182 行）。所以基准**只能是订单金额**，
-并用 `test_amount_basis_is_the_order_not_the_request` 钉住它 ——
-这类错不会报错，只会让每一笔走询价的单子都付不出去。
-
-**② `precheck_three_way` 与 `match_three_way` 必须分两层。**
-A.5 的函数是**标量对整单**，没法表达"压根还没有订单"——
-传 0 进去会得到"发票金额 0 与订单金额 24000 相差 24000，超出容差"，**指错方向**。
-所以结构性判断（`NO_ORDER` / `NO_INVOICE`）放外层，三条匹配规则仍只有 A.5 那一份实现。
-
-### 8.3 补：发票作废 ✅（2026-10-05，用户点名）
-
-**为什么补**：我在 8.3 收尾时把"发票没有作废出口"列为 **[P1] 真债**，用户点名现在就做。
-
-**做法**：作废是**状态变更**，不是删行（`invoices.status`：`ACTIVE` / `VOIDED`）。
-
-| 要点 | 怎么做的 | 为什么 |
-| --- | --- | --- |
-| 痕迹 | **保留行** + 写 `INVOICE_VOIDED` 事件（含原因、作废后的有效合计） | "曾经登记过、后来作废了、谁作废的"是审计要看的事实。删行会让它永远查不出来（与 M9 的附件删除同一条口径） |
-| 金额口径 | 作废票**不参与任何金额计算** | 这是"作废"唯一的作用。实现上收在一处：`invoice_repo._active_only(...)`，`totals_of` / `supplier_ids_of` / 匹配全部过它 —— **过滤条件散在四五个查询里早晚漏一处，而漏掉的那处会拿着含作废票的合计去付款** |
-| 发票号复用 | 普通唯一约束**换成部分唯一索引** `WHERE status = 'ACTIVE'` | "录错号 → 作废 → 按正确的号重录"是最正常的纠错路径；普通唯一约束会让作废那行一直占着号 |
-| 主单状态 | **不变**（留在 `INVOICED`） | "这张单子收过票"是历史事实，不会因为票作废而没发生过 —— 退回去会让"付过款的单子"与"票作废的单子"长得一样 |
-| 三条拒绝 | 重复作废 → 409；**已付款后作废 → 409**；可见范围外 → 404 | 已付款那一条是少见的"宁可人工"分支：作废会让"已付金额 vs 有效发票合计"对不上，而系统没有退款流程 |
-| 并发 | 条件更新 `WHERE status = 'ACTIVE'` + `RETURNING` | 先查再写会让两人同时作废都成功，于是**同一次作废写两条事件**（痕迹重复而账只变一次） |
-
-**容错补充**：作废票**仍然出现在发票列表里**（列表默认 `include_voided=True`）——
-悄悄不显示的话，用户会以为从没登记过，然后又去登记一次（这次会成功，因为号已释放），
-账上就出现两张一样的票。
-
-**一处修正**：全部作废之后，匹配报的是 **`NO_INVOICE`** 而不是 `AMOUNT_MISMATCH`。
-拿"登记条数 > 0"判有没有发票会得到后者 —— 而真正的原因是"一张有效发票都没有"，
-报"金额差超容差"是**指错方向**。判据收在 `domain/settlement_policy.voidable(...)`。
-
-**验收**（新增 14 条集成 + 6 条纯函数，全量 447 → **461 passed**）：
-
-| 用例 | 实测 |
-| --- | --- |
-| 作废把金额从匹配里排掉 | ✅ 订单 240 元、两张各 240 元（超容差）→ 作废一张 → 合计回到 240 元 → **通过** |
-| 作废号的复用 | ✅ 同号第二次登记 409 → 作废 → 同号再登记 **201** |
-| 全部作废 | ✅ 报 `NO_INVOICE`，有效张数 0、合计 0 |
-| 错票作废后不再误报供应商不一致 | ✅ `all_suppliers_match` 由 false 变 true |
-| 只改状态、不动主单 | ✅ 版本不变、事件 `from == to == INVOICED` |
-| 重复作废 / 采购越权 / 不存在的 id | ✅ 409 / 403 / 404 |
-
-### 8.3 已修：`payments` 的两处设计（8.4 开工前定死）
-
-用户点名"**`FAILED` + `UNIQUE(request_id)`：必须修正后再做 8.4**"。
-读全文档后发现这处矛盾**文档自己已经给出了正解**，是我先前只读了 2463 行：
-
-> 2460 行：`FAILED` → 付款尝试失败（保留痕迹，**允许重新发起**）
-> 2463 行：一笔申请第一版只允许一笔付款：`UNIQUE(request_id)`
-> **2484 行**：或者在 `paid_at` 上加"同一 `request_id` 只能有一条非空"的**部分唯一索引**
-
-**普通 `UNIQUE(request_id)` 与"允许重新发起"直接冲突**：第一次失败之后再建付款单会撞唯一约束，
-于是"保留痕迹、允许重试"这条规则**根本执行不了**（用户看到的是一个数据库冲突）。
-
-**定成**（8.4 用，届时写进迁移）：
-
-```sql
--- ❌ 不这样做：UNIQUE (request_id)  —— 失败后无法重试
-CREATE UNIQUE INDEX uq_payment_active ON payments (request_id)
-    WHERE status <> 'FAILED';      -- ✅ 至多一张"有效"付款单（PENDING / PAID）
-```
-
-- `payments.status`：`PENDING` / `PAID` / `FAILED`（2460 行，**原样照用**）；
-- `attempt_no`：同一申请第几次尝试（`FAILED` 的行会累积，界面上要看得出"试过两次"）；
-- 并发保护**不靠那个索引**（索引只是数据库兜底）：主防线是
-  `UPDATE payments SET status='PAID' WHERE id=? AND status='PENDING'` 的
-  `rowcount != 1 → 409`，且它必须在 `spend_budget` **之前**（2480 行）。
-
-> **这一处值得记**：`UNIQUE` 这种东西，加它的本意是"防重复"，但**加错了对象**
-> 就会把"合法的重试"也防掉 —— 而它表现为一个数据库冲突，看起来像偶发故障。
-> 判据是：**这条约束防的是"同时存在两条"，还是"历史上出现过两条"？**
-> 前者用部分索引（带状态条件），后者才用普通唯一约束。本项目里
-> `quotations (request_id, supplier_id)` 属于前者（同一家只能报一次，作废之后也不能再报），
-> `invoices` 的号也属于前者（只有有效的号不能重），所以两处都是部分唯一索引。
-
-### 8.4 付款与归档 ✅（2026-10-05）—— **M10 履约链闭环**
-
-| 层次 | 产出 |
-| --- | --- |
-| 迁移 `3772ae5acab4` | `payments` 表（**部分唯一索引** `WHERE status <> 'FAILED'`）+ 手工补主单状态白名单加 `PAID` / `CLOSED` |
-| `application/coordinators/settlement.py` | 创建付款单 / 执行付款 / 标记失败 / 归档 / 读付款单 |
-| `boundaries/http/settlement.py` | 六条路由：创建付款单、执行付款、标记失败、付款单详情、申请付款单列表、归档 |
-
-**`pay` 的八步（实施计划 2467-2476，一步不省、顺序不调）**：
+**8.4 的顺序是并发正确性的全部**：
 
 ```
 ① 主单 = INVOICED        ② 三单匹配（不过 → 422 + 问题列表）
 ③ 条件更新 PENDING → PAID（rowcount != 1 → 409）  ← **必须在 ④ 之前**
 ④ settle：SPEND(实付) + RELEASE(预留 − 实付)      ← 两笔流水都必须写
-⑤ 主单 → PAID（条件更新）  ⑥ 写事件（含实付与释放差额）  ⑦ commit
+⑤ 主单 → PAID   ⑥ 写事件（含实付与释放差额）   ⑦ commit
 ```
 
-**③ 为什么必须在 ④ 之前**：先抢到付款权的那一方才去动预算，抢输的一方在动钱之前就退出。
-这是"唯一真正动钱的操作"，两个财务同时点必须只有一个成功。
+**③ 必须在 ④ 之前**：先抢到付款权的那一方才去动预算，抢输的一方在动钱之前就退出。
 
-**验收（实施计划 2486-2495）**：
+**M10 前端（履约工作台）**：一页串起"询价定标 → 下单收货 → 收票匹配 → 付款归档"，
+`m6-页面实测.mjs` 42 → **51 项**（真实浏览器走完整条链，含账目核对）。
+顺带修掉一个**后端真 bug**：`fully_received` 原按"当前主单状态是不是 `RECEIVED`"判定，
+而收齐之后主单会继续往前走（收票 → `INVOICED`）→ 订单详情页**突然说"没收齐"**。
+正确判据是"这张申请有没有收货单"。
+
+## M11 · AI 制度助手 ✅（2026-10-06）
+
+**顺序：先知识库 → 再检索 → 最后才是模型。** 计划里那句话是这一阶段的提纲：
+"很多人一上手就『接个大模型』，结果做出一个会编造制度条文的玩具。"
 
 | 验收项 | 实测 |
-| --- | --- |
-| 未收货就创建付款单 → 拒绝 | ✅ **409**（状态机里 `RECEIVED` 之前没有通向 `INVOICED` 的边，不靠前端按钮控制） |
-| 发票金额超容差 → 付款 **422** 并列出具体差异 | ✅ 消息含「超出容差 5000 分」「相差 6000 分」；且**不留半截状态**（主单仍 `INVOICED`、付款单仍 `PENDING`、预算没动） |
-| **两个人同时点付款，只有一个成功，另一个 409** | ✅ `asyncio.gather` 真并发（**不同幂等键**，否则会被幂等层拦成重放、测不到条件更新那一层），结果 `[200, 409]` |
-| **`amount_spent` 只增加一次** | ✅ 且 `SPEND` 流水只有一条 |
-| **预留 1000 实付 900 → `amount_spent` +900、该申请 `amount_reserved` 归零、流水有 `SPEND 900` 与 `RELEASE 100`** | ✅ 本项目的数字是预留 **6000 元**（申请金额）、实付 **240 元**（订单金额）→ `SPEND 24000` + `RELEASE 576000`，预留归零、总额不变 |
-| 付款成功后预算"已预留减少、已花增加、**总额不变**" | ✅ 三个数逐个断言 |
-| 全链路走通（申请 → … → 归档） | ✅ 事件链覆盖 `REQUEST_SUBMITTED → … → REQUEST_CLOSED`，最终 `(总额, 预留, 已花) = (10000, 0, 240)` 元 |
-
-**`FAILED` 与重新发起**（用户点名要在 8.4 之前修正的那两处）：
-
-| 用例 | 实测 |
-| --- | --- |
-| 失败后重新发起 | ✅ 第一张 `FAILED` → 第二张 `attempt_no = 2`，创建 201；列表里两条都在（`["FAILED", "PENDING"]`） |
-| 有 `PENDING` 时再建 → 409 | ✅ 部分唯一索引 + 入口校验两层 |
-| 失败**不动预算** | ✅ 预留仍是 6000 元、流水只有一条 `RESERVE` —— 钱没出去，预留就该留着（否则重新发起时额度已不在自己名下） |
-| 已付款的单再标失败 → 409 | ✅ |
-
-**测试**：`test_api_payments.py` **23 条**集成（+ 状态机 2 条）。
-全量 `pytest` 461 → **486 passed**。
-
-### M10 收口：履约链闭环
-
-| 子阶段 | 主单状态迁移 | 关键不变量 |
-| --- | --- | --- |
-| 8.1 询价与定标 | `SOURCING → AWARDED` | ≥3 家有效报价（超比价线时）；成交单价 = 选中报价原值 |
-| 8.2 订单与收货 | `AWARDED → ORDERED → RECEIVED` | 订单金额 = Σ(成交单价 × 数量)，**由后端重算**；收齐才收货 |
-| 8.3 发票与匹配 | `RECEIVED → INVOICED` | 有效发票**求和**参与匹配；作废票不参与且号可复用 |
-| 8.4 付款与归档 | `INVOICED → PAID → CLOSED` | 条件更新抢付款权；**差额显式释放**；`SPEND` + `RELEASE` 两笔流水 |
-
-**状态机至此闭环**：12 个状态、每个都有真实代码会走到，`PARTIALLY_RECEIVED` 始终不在其中。
-
-## M10 · 履约链（前端）✅ 履约工作台（2026-10-06）
-
-- [x] 全链路的前端页面：下单 / 收货 / 收票 / 作废 / 三单匹配对比页 / 付款 / 归档
-- [x] 三单匹配对比页正确显示三列和差异高亮
-
-### 为什么是"一个工作台"而不是"一个子阶段一个页面"
-
-理由写在 `pages/Fulfillment.tsx` 的文件头，三条：
-
-1. 采购专员走完一笔单子要点四五次菜单，而这是每天重复几十遍的活；
-2. 每个页面都要重新查一次那张申请（多几次往返，也多几处不一致的机会）；
-3. **"谁该看到哪一步"会散在四五个路由守卫里**，早晚有一处漏。
-
-| 部分 | 内容 |
-| --- | --- |
-| 三个队列（**按角色出现，没那个角色就不查那个接口**） | 待询价（`PROCUREMENT`）/ 待收货（`RECEIVER`+`PROCUREMENT`）/ 待付款（`FINANCE`） |
-| 一条链的面板（`?request=<id>` 直接展开） | 链路进度条 → 比价与定标 → 采购订单 → 发票 → 三单匹配 → 付款与归档 |
-| 新增 API 层 | `api/fulfillment.ts`（17 条路由 + 类型）、`api/hooks/useFulfillment.ts` |
-| 入口 | 侧边栏「履约工作台」、首页快捷入口、申请详情页「履约进度」卡片 |
-
-**三条不肯让步的约定**（写在文件头）：
-
-1. **按钮能不能点由后端状态决定，不由前端猜** —— 多放一个能点的按钮，点下去只会拿到 409；
-2. **`version` 一律取自最近一次读到的对象**，不自己加减（乐观锁靠它判胜负）；
-3. **幂等键在发起动作前生成、失败后轮换** —— 复用旧键会撞「同键不同载荷」409，
-   而用户看到的是"我明明改了数字，它却说重复提交"（`useIdempotencyKey` 把这个时机收在一处）。
-
-### 顺带发现并修掉一个**后端真 bug**
-
-`fully_received` 原来按"**当前**主单状态是不是 `RECEIVED`"判定，而收齐之后主单会继续往前走
-（收票 → `INVOICED`）—— 于是订单详情页**突然说"没收齐"**，而仓库明明收齐了。
-它当时测试是绿的：另一条用例只在 `RECEIVED` 那一刻看了一眼。
-正确判据是"这张申请有没有收货单"（第一版只做整单收货，有单就等于收齐）。
-已加回归 `test_fully_received_does_not_go_backwards_after_invoicing`。
-
-### 验收：`m6-页面实测.mjs` 42 项 → **51 项**（新增 9 项，真实浏览器走完整条链）
-
-| 步骤 | 实测 |
-| --- | --- |
-| ① 部门主管**认领**并点「通过」 | ✅ 主单 `SOURCING`（或签级要先认领，「通过」才出现） |
-| ② 采购登记报价（300 元）并定标 | ✅ 主单 `AWARDED` |
-| ③ 采购点「生成订单」 | ✅ 订单金额 **30000 分 = 成交单价 × 数量**（不是申请金额 90000） |
-| ④ 收货人「登记收货」 | ✅ 主单 `RECEIVED` |
-| ⑤ 发票开成 400 元 | ✅ 对比页 `AMOUNT_MISMATCH`：「相差 10000 分，超出容差 5000 分」 |
-| ⑥ 错票作废 → 按 300 元重开 | ✅ 状态「已作废」、号可复用、匹配变「在容差内」 |
-| ⑦ 财务「执行付款」 | ✅ 主单 `PAID`，页面显示「付款完成：实付 ¥300.00，释放预留差额 ¥600.00」 |
-| ⑧ 归档 | ✅ 主单 `CLOSED`（终态） |
-| ⑨ 账目核对 | ✅ 总额不变、已花 +30000、本单预留归零、流水含 `SPEND:30000` 与 `RELEASE:60000` |
-
-**浏览器自检** 12 项 → **15 项**：新增"采购菜单里有履约工作台"、
-"采购能打开工作台看到待询价队列"、"申请人打开 `/fulfillment` 得到无权限页"——
-这三条守的是**同一组角色判断写在三处**（菜单 / 路由守卫 / 首页入口）的一致性。
-
-### 这一轮修掉的**测试**问题（值得记：它们都长得像产品 bug）
-
-| 现象 | 真因 | 改法 |
-| --- | --- | --- |
-| 造数据 422 `SELF_APPROVAL_NOT_ALLOWED` | 我让**部门主管**提交，第 10 级 `DEPT_MANAGER` 在行政部只有他一人 = 自审 | 改成**部门负责人**提交（后端拦得对，是数据选错人） |
-| 等"已通过"文字超时 | 批准成功后组件 `navigate` 离开，那几个字只闪一下 | 改成**轮询主单状态**（`pollStatus`） |
-| 点链接没反应 | 只等"页面出现『我的待办』"就点，列表还没渲染完 | **用接口定位任务 id 后直接导航** |
-| 找不到「通过」按钮 | `SINGLE`（或签）级是**认领制** | 先点「认领这条任务」再通过 |
-| 发票登记不上 | 选择器用 `placeholder`，而面板上**有两个**同样的 placeholder | 加 `data-testid`，并让填值函数**写后回读、失败即抛** |
-| 第一次点付款没反应 | **上一步没等完**（`创建付款单` 还是 `创建中…`） | 等按钮回到可点状态再进下一步 |
-| ⑨ 预算断言失败 | 库里残留别的运行的 `RESERVE`，而我写了绝对数字 | 改成**相对基线**断言 |
-| `budgets.filter is not a function` | 我用部门负责人身份取预算（那个接口只给 FINANCE/ADMIN），拿到的是错误体 | 取基线时临时切管理员 |
-| 脚本卡住不退出、看起来"没在跑" | 失败时 `实测中断`，而 `waitFor` 只报标签不报现场 | 超时时**打印 URL + 页面文字 + 按钮清单** |
-
-## M11 · AI 制度助手 ✅ 完成（2026-10-06）
-
-- [x] 上传制度文档，`knowledge_chunks` 里能看到切分结果
-- [x] 问文档里有的问题，回答带出处
-- [x] **问文档里没有的问题，明确说"未找到相关规定"，不编造**
-- [x] 流式回答逐段出现（`meta` → `delta`… → `done`）
-- [x] `meta` 事件里有来源列表
-- [x] 检索为空时能看到"未调用模型"（界面 + 库里的 `used_model` / `reason`）
-- [x] **引用不存在编号的回答能被 `check_citation_integrity` 发现**（并且**落库**）
-- [x] **上传同一制度第 2 版，检索只命中第 2 版**
-
-### 顺序：先知识库 → 再检索 → 最后才是模型
-
-计划里那句话是这一阶段的提纲："很多人一上手就『接个大模型』，
-结果做出一个会编造制度条文的玩具。"
-
-| 层 | 产出 |
-| --- | --- |
-| `domain/embedding.py` | **本地 signed-hashing**（256 维）：英文按词、中文按字，`blake2b` 保证跨进程稳定 |
-| `domain/chunking.py` | 600 字 / 100 重叠 / 尾片并上一片，切分点尽量落在段落与句末 |
-| `domain/grounded_answer.py` | **两条规则**：`decide_grounding`（没依据不调模型）+ `check_citation_integrity`（引用必须可信） |
-| 迁移 `16261da1b0f9` | `CREATE EXTENSION vector` + 四张表 + **HNSW 索引（`vector_cosine_ops`）** |
-| `infrastructure/chat_models.py` | 远端（OpenAI 兼容流式，可选）+ **本地兜底**（抽取式，永远可用） |
-| `application/coordinators/knowledge.py` | 上传 / 切分 / 检索 / 阈值判定 / 回答 / SSE 事件流 / 会话 |
-| 前端 | `pages/Chat.tsx`（流式 + 引用卡片 + 历史回放）、`pages/admin/Knowledge.tsx`（上传 + 看切分） |
-
-### 三处关键取舍
-
-**① 向量维度是"必须一起改的两个数字"。** `vector(256)`（列定义）与
-`domain/embedding.VECTOR_DIM` 必须一致。换 embedding 模型几乎必然换维度，
-而 PostgreSQL 改维度只能新建列、重灌数据、再索引 —— 所以每份文档还要在
-`embedding_docs.embedding_model` 里记下用的是哪个模型（含维度）。
-检索时**只取当前模型算的向量**：混着检索的距离不可比，结果是**静默变差**。
-
-**② 检索永远返回 top-k，所以"没有依据"必须由阈值判定。**
-只判"结果为空"的话，问一个制度里没有的问题会把最不相关的片段递上去，
-模型就拿着不相干的材料硬答。实测：问"年假多少天"时检索到的片段相似度 0.000，
-若只判空就会走"调模型"这条路 —— `decide_grounding` 的第二种情况正是为它写的。
-
-**③ `chat_sources` 没有单独建表**（计划里列了）：引用来源只有"跟着回答一起显示"
-一种读法，`chat_messages.sources` 用 JSONB 存**不可变快照**
-（回答当时引用了什么，事后不随文档改版而变）。代价写在
-`records/knowledge.py` 里：**不能按来源反查**（"哪些回答引用了第 5 版第 12 条"查不了）。
-
-### 验收实测
-
-| 验收项 | 实测（`test_api_knowledge.py` 22 条集成 + 6 条页面实测） |
 | --- | --- |
 | 上传 → 切分结果可见 | ✅ `knowledge_chunks` 里片段齐全，**每片的 `[start,end)` 能取回原文**；管理页可展开看 |
 | 问文档里有的问题 → 带出处 | ✅ 回答含 `[1]`，`citation_problems == []` |
 | **问文档里没有的 → 拒答** | ✅ 「制度中没有找到相关规定。」，`used_model=false`，reason 含"未调用模型" |
-| 流式逐段出现 | ✅ 事件序 `meta → delta… → done`，首事件必为 `meta` |
-| **引用不存在编号 → 校验发现** | ✅ 用一个"故意引用 `[9]`"的假模型构造，校验报出且**问题落库** |
-| **第 2 版生效 → 只命中第 2 版** | ✅ 命中版本集合 `{2}`，内容是第 2 版条文；**未来版本不出现**（另一条用例） |
+| 流式逐段出现 | ✅ 事件序 `meta → delta… → done`，**首事件必为 `meta`** |
+| **引用不存在编号 → 校验发现** | ✅ 用"故意引用 `[9]`"的假模型构造，校验报出且**问题落库** |
+| **第 2 版生效 → 只命中第 2 版** | ✅ 命中版本集合 `{2}`；未来版本不出现 |
+| 未调用模型在界面与库里都看得见 | ✅ 页面徽标 + 库里的 `used_model` / `reason` |
 
-### 这一阶段踩到的四个真问题（都是"看起来像别的毛病"的那类）
+**三处关键取舍**：① 向量维度是"必须一起改的两个数字"（列定义与 `VECTOR_DIM` 一致）；
+② 检索永远返回 top-k，所以"没有依据"**必须由阈值判定**；③ `chat_sources` 不单独建表
+（用 JSONB 存不可变快照，代价是**不能按来源反查**）。
 
-1. **`used_model` 的语义写错了**：我算的是"要不要生成回答"，
-   而它要回答的是"**远端模型有没有被调用**"。本地兜底下一次网络调用都没发生，
-   该字段却是 `true` —— 于是"未调用模型"这条验收项永远显示错误。
-   而且我只改了流式那条路、漏了非流式，测试打的正是非流式（两条路都要用同一个helper）。
-2. **重复版本被推迟到"无关的 SQL"上才炸**：`create_doc` 的 flush 被推迟，
-   `UNIQUE(source_key, version)` 的异常从后面"插入片段"那条语句冒出来，
-   `except IntegrityError` 接不住 → 用户看到 **503「数据库暂不可用」**。
-   修法：**显式查重**给一句人话的 409 + 在 `create_doc` 里**显式 flush**
-   （让异常在最接近它原因的地方抛出）。并发仍由唯一约束兜底。
-3. **类型补全的优先级搞反了**：`httpx` 对 `text/plain` 的 multipart 部分
-   **不发 `Content-Type`**，于是所有 `.txt` 制度被 422 挡掉。
-   加"按扩展名补全"之后又反了 —— 声明 `application/pdf` + 文件名 `.txt`
-   被当成纯文本收下（一条"应当被拒"的用例变成了 201）。
-   **顺序必须是"先看声明、只在声明缺失时补全"**。
-4. **前端 `done` 事件没回调出去**（由浏览器实测脚本发现）：
-   `streamAnswer` 的 `emit()` 在 `done` 分支只置了 `closed = true`，
-   从未调 `handlers.onDone()` → 页面永远停在"正在回答…"，光标一直闪。
-   另外该页**没有读历史消息**（后端一直有这个接口），标了句"不假装能回放" ——
-   那是**没做完**，不是取舍。两处都已修（并补上 `GET /sessions/{id}/messages` 的回放面板）。
+## M11+ · AI 模块增强 ✅（2026-10-14）
 
-### 清理脚本（`testdata_cleanup.py`）补了三处
+**把 AI 模块从"能跑"推到"能衡量、能回归"。** 评测方法与全部数字见
+[docs/AI-评测baseline.md](docs/AI-评测baseline.md)。
 
-M11 的数据落在两张新表 + 同一个 `uploads/` 根目录，原来的清理只认附件：
-① 知识库文档与片段要清（`source_key` 前缀 `M11PAGE-` / `M11TEST-` / `PROBE%`）；
-② **孤儿文件判据要把 `knowledge_docs.storage_key` 也算作"在册"** ——
-   漏了它会把制度原文当孤儿删掉（库里有行、文件没了）；
-③ 演示 `admin` 名下的会话要清（脚本与集成测试都用它提问，实测攒了 14 个）。
+| # | 内容 | 关键交付 |
+| --- | --- | --- |
+| 1 | **27 条 Golden QA + 分层指标** | `scripts/eval/knowledge_eval_cases.json`（**定位标记法**：改切分不用改评测集）、`domain/retrieval_metrics.py`（Recall/Precision/MRR/NDCG） |
+| 2 | **质量门禁进回归入口** | `knowledge_eval.py --gate`，门槛写死在 `GATES`，接进 `回归验收.ps1` 第 13 步 |
+| 3 | **引用支撑性校验**（第二层 / Faithfulness） | `domain/citation_support.py`：数字不支撑 / 否定翻转（**作用域匹配**）/ 引用错位；`support_rate` 落库 |
+| 4 | **延迟与成本可观测** | 迁移加 5 列（两段延迟 + token + 成本微元 `BIGINT`）；`domain/cost.py`、`model_pricing.py` |
+| 5 | **token 配额限流** | `infrastructure/token_quota.py`（按 **token** 不按请求数），两个问答接口都过，429 带原因 |
+| 6 | **真语义 embedding** | `EmbeddingPort` + `OllamaEmbedding` + 维度注册表；向量列 256 → 512 |
 
-**测试**：纯函数 34 条（`test_grounded_answer.py` + `test_embedding_and_chunking.py`）
-+ 集成 22 条 + 页面实测 6 条。全量 `pytest` 488 → **544 passed**；
-浏览器自检 15 → **17 项**；回归入口 11 → **12 步**。
+**验收逐条对账**：门禁能红（用注入的假指标验过 6 种情况）；两层引用校验都生效；
+`retrieval_ms` / `model_ms` 落库且非 `None`；成本口径分开断言（拿不到用量 `NULL`、本地模型 `0`）；
+限流真的会 429 且**被限流的输入会还给用户**。
 
-### 真债
+### 真 embedding 前后的实测对比（27 条 Golden QA）
 
-- **远端模型那条路没被真实执行过**：本机没有密钥，`OpenAiCompatibleChat`
-  的解析逻辑只有单测级别的依据（协议公开且稳定 + 对分片/非 JSON/缺 choices 都有处理），
-  **没有跑过真实调用**。它不影响任何一条校验（`decide_grounding` 与
-  `check_citation_integrity` 都在它之外）。
-- **本地 embedding 没有语义能力**：靠字面重合，所以"多少钱要招标"这类
-  换个说法的问法检索不到 —— **别用它判断 RAG 设计好不好**，它只能验证链路通不通。
-- **只收 `.txt` / `.md`**：PDF 要额外依赖（`pypdf` 之类），第一版没引；
-  真收 PDF 时必须补**魔数校验**（现在只按声明类型 + 扩展名补全，不校验内容）。
+| | 哈希 @ 0.15 | **真 embedding @ 0.50** |
+| --- | --- | --- |
+| Recall@5 | 1.000 | 1.000 |
+| MRR | 0.879 | **0.93~0.96** |
+| NDCG@5 | 0.910 | **0.95~0.97** |
+| 实际回答成功率 | 0.864 | **1.000** |
+| 能答却被拒答 | 3 条 | **0 条** |
+| 无答案被正确拦住 | 3/5 | 3/5 |
+
+**最重要的一条**：`min_score` 是"要不要回答"的唯一判据，而它的**量纲由 embedding 决定** ——
+**换模型必须重新标定阈值**。哈希时代的问题是"该答的不答"；
+**只换模型不动阈值**会走到反面"不该答的全答了"（5 条无答案问题全部越过 0.15）。
+两类分数**仍有重叠**（无答案最高 0.6533 > 能答最低 0.5228），所以"0 误拒 + 5/5 拦住"的阈值不存在。
+
+## M12+ · Function Calling 与最小 ReAct ✅（2026-10-14）
+
+**这是 JD 里权重最高、之前却完全空白的一项**（"AI 实习生"与"RAG 实习生"的分界线）。
+做完之后，Agent 能以**调用者的身份**去查真实业务数据，而权限、幂等、审计全部复用既有那套。
+
+| # | 内容 | 关键交付 |
+| --- | --- | --- |
+| 1 | **工具声明 + 参数校验**（纯函数） | `domain/tooling.py`：JSON Schema 子集校验。**未知参数一律拒绝**（注入载体）、**`bool` 不算整数**（Python 经典静默放行）、上界防"拖整张表" |
+| 2 | **工具注册表** | `application/tools.py`：4 个工具（列申请 / 按单号查申请 / 列待办 / **建草稿**）。返回给模型的数据**不含内部 UUID** |
+| 3 | **权限继承（不新增概念）** | 工具以 `Principal` 身份走**与 HTTP 接口同一批用例**；参数里**没有**"以谁的身份"这种字段 |
+| 4 | **协议改造** | `ChatModelPort` 加 `stream_turn` + `ToolCall` / `ChatMessage` / `TurnResult`；工具回合走 Ollama 原生 `/api/chat` |
+| 5 | **最小 ReAct 循环** | `application/agent.py`：想→调工具→看结果→回答。**三条护栏**：轮次上限 4、总耗时 180 秒、连续失败 3 次 |
+
+**写工具两段式**：`create_purchase_draft` 标 `mutating=True`，第一次调用**只校验、不落库**，
+返回绑定"谁 + 要做什么"的确认令牌；**人确认之后**才真正执行
+（`POST /api/v1/chat/confirm-draft`）。确认时**必须原样回传内容**并逐字比对 ——
+因为令牌是 `uuid5(actor+标题+品类+备注)`、**可被推算**。
+
+**验收逐条对账**：
+
+- [x] 工具参数校验：**27 条**纯函数测试
+- [x] **身份不能被参数指定**：测试断言工具收到的是调用者的 `actor_id` / `roles` / `department_id`
+- [x] 三条护栏**确定性可测**（12 条 Agent 测试，用假模型造出每一种失控）
+- [x] **真模型 tool calling 可用**：Qwen2.5-3B 返回结构化 `tool_calls`（实测）
+- [x] **端到端**：问"我提过哪些采购申请" → 模型调工具 → 答出 3 张真实单子（含金额、状态、时间）
+- [x] 写工具不落库；**确认后建单、重复确认只建一张**（集成测试断言库里真的只有一张）
+- [x] **审计不说谎**：`used_model=True`、`support_details` 里落 `kind=agent` 与轨迹
+- [x] **前端渲染 Agent 步骤**：`step` 事件已能显示；SSE 纯逻辑抽出并加 **14 条单测**
+- [x] **回归**：14 步退出码 0、pytest **680 passed**、探针 **20/20**
 
 ## M12 · 桌面壳与移动端 ⏸️ 暂不做（2026-10-06 决定）
 
-**为什么可以不做**（计划第 593 行本来就把 M11/M12 列为"可永久不做"）：
+**为什么可以不做**（计划里本来就把 M11/M12 列为"可永久不做"）：
 
 - 它**不影响主干学习目标**（动态审批引擎、预算并发预留、三单匹配都在 M6/M7/M10 里）；
 - 它是**打包工程**，不是领域建模 —— 学到的东西与前面十一个阶段不重叠；
 - 它的前置已经就位（前端同源、Vite 代理只换 `target`），**随时可以回头做**。
 
-**做的时候要注意的三件事**（现在先记下来，免得将来从零想）：
+**做的时候要注意的三件事**（先记下来，免得将来从零想）：
 
 1. **共用同一份 `frontend/src`**：不许分叉出第二套代码。形态差异只能靠
-   `vite.config.ts` 的 `base`/代理 与外壳配置解决；
-2. **打包后前后端不同源**：`client.ts` 里那句
-   "`credentials: 'same-origin'` 是写给 M10 前后端分源时用的"就是为这一步留的 ——
-   到时要改成显式带上目标源，并**加回 `CORS_ORIGINS`**（现在刻意没有它）；
+   `vite.config.ts` 的 `base`/代理与外壳配置解决；
+2. **打包后前后端不同源**：`client.ts` 里那句"`credentials: 'same-origin'` 是写给前后端分源时用的"
+   就是为这一步留的 —— 到时要改成显式带上目标源，并**加回 `CORS_ORIGINS`**（现在刻意没有它）；
 3. **httpOnly Cookie 的域**：桌面壳与 APK 都不是 `localhost`，
    refresh token 的 Cookie 域与 `SameSite` 需要重配，而**这不影响 access token 逻辑**。
 
-- [ ] 双击 `.exe` 能打开，窗口无浏览器地址栏
-- [ ] APK 装到手机上能登录、能看到待办
-- [ ] 桌面端和移动端用**同一份 `frontend/src`**，没有分叉出第二套代码
-
----
-
 ## 三条"静默失败"约束（每阶段都要回头看）
 
-违反**不会报错，只会算错**，所以必须靠验收项主动去撞：
+违反**不会报错，只会算错**，所以必须靠验收项主动去撞。权威清单与实测见
+[RISKS.md](RISKS.md) 第四节。
 
-| 约束 | 怎么撞它 |
-| --- | --- |
-| **审批链不许为空** | M2 提交无兜底策略 → 422 |
-| **预留与实付差额必须显式释放** | ✅ M7 已撞过：`test_ledger_covers_all_three_kinds_and_sums_to_zero`（实付 < 预留时断言 `reserved` 归零、三类流水相加为 0）；M10 的付款接口再撞一次 |
-| **权限范围必须写进 `WHERE`** | M3 换 id 取别人的申请 → 404 |
+| 约束 | 怎么撞它 | 现状 |
+| --- | --- | --- |
+| **审批链不许为空** | 直连库造空策略品类 → 提交 → 应得 `422 EMPTY_APPROVAL_CHAIN` 且主单回滚仍为 `DRAFT` | ✅ 探针已覆盖 |
+| **预留与实付的差额必须显式释放** | 预留 → 撤回 → 读库，`reserved` 归零、流水相加 = 0 | ✅ 探针 + 集成测试已覆盖 |
+| **权限范围必须写进 `WHERE`** | 另一个部门的人拿 id 读/改 → 应得 **404**（不是 403） | ✅ 探针已覆盖 |
 
 ## 待修：内控缺口（2026-10-03 记录）
 
 > 起因：`业务规则.md` 缺了"职责分离"整整一类要求，实跑发现**申请人能批掉自己的申请**。
-> 依据与逐条对账见 [`docs/采购内控对照.md`](docs/采购内控对照.md)（法规原文 + Oracle 官方文档 + 开源实现）。
+> 依据与逐条对账见 [docs/采购内控对照.md](docs/采购内控对照.md)。
 
-### ✅ 已修（2026-10-03）
+**✅ 已修（2026-10-03）** —— 最严重的是前两条：
 
-| # | 缺口 | 修法与验证 |
+| # | 缺口 | 修法 |
 | --- | --- | --- |
-| 1 | **提交人可自审自批** | **三层拦截**：① 建链时 `exclude_requester` 剔除提交人（该级只剩他 → 提交时 422 `SELF_APPROVAL_NOT_ALLOWED`）；② 待办查询加 `requester_id != actor_id`（挡**或签** —— 或签任务没有预分配人，①挡不住）；③ `decide`/`claim` 的 SQL 加 `NOT EXISTS(该申请是 actor 提的)` + `_assert_can_act` 403。判定是 `domain/` 纯函数 + 失败关闭。**真实服务验证**：`dept-manager` 提交自己的申请 → `422 SELF_APPROVAL_NOT_ALLOWED`，且自己待办里看不到 |
-| 2 | **`/api/v1/suppliers` 未登录可读、`only_active` 客户端可控** | 该路由加 `CurrentUser`；`only_active` 参数**收掉**（合格过滤写死；看全部走 `/admin/suppliers`）。**真实服务验证**：未登录 → `401`；`requester` 带 `?only_active=false` → 与不带时**完全一致** |
-| 9 | **无部门账号"填完一整张表才被拒"**（浏览器审查时发现） | 前端新建页加**顶部红字提示 + 禁用「保存草稿」**，并给 `handleSubmit` 加早退（提示里说清"部门决定预算与审批链，是必填项"以及该找谁）；后端文案从"无法**提交**采购申请"改为"无法**创建**采购申请"（同一条路径也服务"保存草稿"，旧文案让人困惑）。**浏览器实测**：`admin` 打开新建页 → 提示出现在表单最上方、保存按钮 `disabled=true`、次要按钮变「返回我的申请」 |
-| 10 | **管理员能看到「管理供应商」入口**（浏览器审查时发现） | `SupplierList.tsx` 的页头链接**无条件渲染**，而侧边栏那三项是按 `isAdmin` 判的 —— 同一个"管理端入口"两处口径不一致。改为按角色显示；空状态文案也分角色（非管理员看到的是"请联系采购部门维护"，而不是一个点进去会 403 的入口） |
-| 11 | **无部门账号仍能看到「我的申请」入口**（审查后定为方案①） | **判据换成"有没有部门"而不是"是不是 ADMIN"**（与后端 `NO_DEPARTMENT` 同源；哪天给管理员指定了部门，他照样能申请）。侧边栏隐藏「我的申请」（**保留「我的待办」**——审批与部门无关，GM 要审大额单）；`/requests`、`/requests/new`、`/requests/:id` 三条路由加 `RequireAuth requireDepartment`（拦下时显示专门说明页，不渲染表单）；新建页那段红字降级为**兜底** |
-| 12 | **`/api/v1/budgets/mine` 匿名可读、且部门可由调用方指定**（本轮对账查出） | M2 留下的两个问题叠加：不要求登录 + `department_id` 是**客户端参数**（注释里写着"M3 起改为从登录态推导"，一直没做）。改为**要求登录 + 部门只从登录态取**；无部门账号返回空列表。**实测**：匿名 → `401`；登录后带 `?department_id=<别的部门>` 结果与不带**完全一致** |
-| 13 | **三个主数据接口匿名可读**（本轮对账查出，已按授权修复） | `/api/v1/departments`、`/api/v1/categories`、`/api/v1/categories/{id}` 全部**改为要求登录**（第三个会把**整份 `approval_policy`** 带出来 —— 金额阈值 + 各级角色，属内控结构信息）；顺带把 `only_active` 这个**客户端可控**过滤器一并收掉（与供应商那次同形）。**实测**：匿名三个全 `401`；登录后照常返回（品类 3 / 部门 4 / 供应商 4）；`only_active=false` 结果与不带一致；**浏览器实测**品类下拉与部门下拉照常加载、供应商页照常列数据 |
+| 1 | **提交人可自审自批** | **三层拦截**：① 建链 `exclude_requester`（该级只剩他 → 提交时 422）② 待办查询加 `requester_id != actor_id`（**挡或签** —— 或签任务没有预分配人，①挡不住）③ `decide`/`claim` 的 SQL 守卫 + 403 |
+| 2 | `/api/v1/suppliers` 未登录可读、`only_active` 客户端可控 | 加 `CurrentUser`；参数**收掉**（过滤写死，看全部走 `/admin/suppliers`） |
+| 9 | 无部门账号"填完一整张表才被拒" | 前端顶部红字提示 + 禁用「保存草稿」+ `handleSubmit` 早退；后端文案从"无法**提交**"改为"无法**创建**" |
+| 10 | 管理员能看到「管理供应商」入口（与侧边栏判据不一致） | 改为按角色显示；空状态文案分角色 |
+| 11 | 无部门账号仍能看到「我的申请」入口 | 判据换成**"有没有部门"**而不是"是不是 ADMIN"；三条路由加 `requireDepartment` |
+| 12 | `/api/v1/budgets/mine` 匿名可读、部门可由调用方指定 | 要求登录 + **部门只从登录态取** |
+| 13 | 三个主数据接口匿名可读（第三个**带出整份审批策略**） | 全部改为要求登录；`only_active` 一并收掉 |
 
-### ⏳ 按定稿口径执行（2026-10-03 定，尚未到落地阶段）
-
-| # | 口径 | 何时做 |
-| --- | --- | --- |
-| 3 | **超预算直接 422**，先调预算再重新提交；不自动放行、不加一级审批 | M7 |
-| 4 | **询价与定标 v1 不分离**（同一采购角色），靠"≥3 家有效报价 + 供应商合格 + 报价完整 + 记成交单价"兜底 | M10 |
-| 5 | **财务 v1 不拆出纳**（同一 `FINANCE` 审核并付款），靠"三单匹配 + 状态机"兜底 | M10 |
-| 8 | **不做委托/转办**；将来做时一次性设计"转派后重新校验权限/角色/范围/历史责任链" | 暂缓清单 |
-
-### ⏳ 仍待落地
+**⏳ 仍待落地**：
 
 | # | 缺口 | 性质 | 何时做 |
 | --- | --- | --- | --- |
-| 6 | **被拒的尝试未留痕**（越权 403 / 越级 403 / 无权操作） | 🟡 可补强 | M8 或 M9 之后；新表存**安全/审计事件**，字段 `actor/action/resource/timestamp/result=DENIED/request_id`，**不要**混进 `request_events`（那是申请人看的时间线） |
-| 7 | **菜单/按钮权限由前端自判**（`App.tsx` 用 `me.roles.includes("ADMIN")`） | 🟡 取舍已定：**继续前端自判**，后端始终是最终边界 | 角色/权限复杂度明显上升时再改 |
-| 14 | ~~审批待办与审批决定缺部门范围~~ | ✅ **已修（2026-10-04）**，见 M9 一节"已修：审批待办与审批决定缺部门范围" | — |
-
-**说明**：原第 1、2 条是最严重的两条，已修完并全量验证（**198 passed**）。
-第 9–13 条是浏览器审查与接口对账期间发现、并当轮修掉的。
+| 6 | **被拒的尝试未留痕**（越权 / 越级 / 无权） | 🟡 可补强（**真债**） | 新表存安全/审计事件，字段 `actor/action/resource/timestamp/result=DENIED/request_id`；**不要**混进 `request_events` |
+| 7 | 菜单/按钮权限由前端自判 | 🟡 取舍已定：**继续前端自判**，后端始终是最终边界 | 角色复杂度明显上升时 |
+| 3/4/5/8 | 超预算直接 422 / 询价与定标 v1 不分离 / 财务 v1 不拆出纳 / 不做委托转办 | 定稿口径 | 已在 M7/M10 落地或列为"暂缓" |
 
 ## 阶段结束时的两件事
 
 1. **本文件**：把该阶段的验收项逐条勾掉，并更新上方「进度总览」的状态与完成日期。
-2. **[Development progress.md](Development%20progress.md)**：回答四问——
+2. **[Development progress.md](Development%20progress.md)**：回答四问 ——
    学到了什么 / 卡在哪 / 有没有留坑 / 为什么用这套技术栈。**回答要精炼简洁。**
 
 验收没过就不进下一阶段；四问没写就不算收尾。

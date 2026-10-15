@@ -4,7 +4,7 @@
 > 当前生效的路线与阶段划分见 [企业采购审批系统-实施计划.md](企业采购审批系统-实施计划.md)（M0–M12 十三阶段；
 > 第六节那 7 个阶段与它的对应关系见那份文档的 1.3）；进度与验收见 [../PROGRESS.md](../PROGRESS.md)。
 
-> 前置文档：[AI--main-项目技术清单.md](AI--main-项目技术清单.md)、[AI--main-改造与轻量化方案.md](AI--main-改造与轻量化方案.md)
+> 前置文档：[reference/AI--main/项目技术清单.md](reference/AI--main/项目技术清单.md)、[reference/AI--main/改造与轻量化方案.md](reference/AI--main/改造与轻量化方案.md)
 > 你的约束：个人项目、不上线、先 Windows 浏览器端 → 再 Windows 独立窗口 → 最后考虑 Android、完全不用华为。
 > 生成时间：2026-10-01。
 
