@@ -1,0 +1,282 @@
+{
+  "_说明": [
+    "本文件是 AI 制度助手的检索评测集（Golden Dataset）。它同时是评测输入与回归基准。",
+    "",
+    "============================ 三条设计约定（改这个文件前先读）============================",
+    "1. **定位标记法**：每份制度文本里埋了 `[[cN]]` 标记，评测运行时把标记映射成真实的 chunk id。",
+    "   这样『期望命中的片段』不写死 chunk 编号 —— 改了切分参数（size/overlap）也不会失效，",
+    "   而写死编号的评测集在改一次切分后就全废了。",
+    "2. **必须有『无答案问题』**：企业 RAG 不能只测『有答案的问题』。",
+    "   无答案问题用来验证『知识库没有就说不知道』，而不是靠模型先验硬答。",
+    "   它们的 `expected_chunks` 为空 —— 注意此时 Recall 是『不适用』（None），不是 0。",
+    "3. **必须有『跨版本问题』**：知识库里同时放着《差旅费管理办法》的 2025 版（已失效）与 2026 版。",
+    "   检索只应命中当前生效版本 —— 引用了作废条文比查不到更糟（用户会照着办）。",
+    "",
+    "============================ 分类与难度 ============================",
+    "category 取值：fact（事实查询）/ condition（条件查询）/ cross_version（跨版本）/",
+    "              colloquial（口语化问法）/ unanswerable（知识库没有答案）",
+    "difficulty 取值：easy / medium / hard"
+  ],
+
+  "documents": [
+    {
+      "source_key": "EVAL-procurement-policy",
+      "title": "采购管理办法",
+      "version": 1,
+      "effective_from": null,
+      "text": "第一条 为规范公司采购行为，加强采购管理，特制定本办法。[[c1]]\n\n第二条 采购金额超过十万元的，应当进行公开招标。采购金额在五万元至十万元之间的，可以采用竞争性谈判或者询价方式。采购金额低于五万元的，可以采用单一来源采购。[[c2]]\n\n第三条 所有采购活动必须有预算。没有预算的采购申请，一律不得提交。[[c3]]\n\n第四条 采购验收由使用部门与仓储部门共同完成。验收不合格的，应当在三个工作日内通知供应商退换。[[c4]]\n\n第五条 付款应当在验收合格之后进行。财务部门付款前应当核对订单、验收单与发票，三者金额一致的方可付款。[[c5]]\n"
+    },
+    {
+      "source_key": "EVAL-travel-policy",
+      "title": "差旅费管理办法",
+      "version": 1,
+      "effective_from": "2025-01-01T00:00:00+00:00",
+      "text": "第一条 员工出差住宿费按职级报销。普通员工每晚上限三百元，部门负责人每晚上限五百元。[[t1-old]]\n\n第二条 市内交通费凭票报销，每人每天上限五十元。[[t2-old]]\n\n第三条 出差补助每人每天一百元，按实际出差天数计算。[[t3-old]]\n"
+    },
+    {
+      "source_key": "EVAL-travel-policy",
+      "title": "差旅费管理办法",
+      "version": 2,
+      "effective_from": "2026-01-01T00:00:00+00:00",
+      "text": "第一条 员工出差住宿费按职级报销。普通员工每晚上限四百元，部门负责人每晚上限六百元。[[t1]]\n\n第二条 市内交通费凭票报销，每人每天上限八十元。[[t2]]\n\n第三条 出差补助每人每天一百二十元，按实际出差天数计算。[[t3]]\n"
+    }
+  ],
+
+  "cases": [
+    {
+      "id": "F-01",
+      "category": "fact",
+      "difficulty": "easy",
+      "question": "采购金额超过十万元的，应当采用什么方式？",
+      "markers": ["c2"],
+      "reference_answer": "应当进行公开招标。",
+      "note": "最基础的条文查询。本地哈希 embedding 靠字面重合，这类问题应当能命中。"
+    },
+    {
+      "id": "F-02",
+      "category": "fact",
+      "difficulty": "easy",
+      "question": "采购金额低于五万元的可以采用什么采购方式？",
+      "markers": ["c2"],
+      "reference_answer": "可以采用单一来源采购。"
+    },
+    {
+      "id": "F-03",
+      "category": "fact",
+      "difficulty": "medium",
+      "question": "采购金额在五万元至十万元之间的，可以采用哪些方式？",
+      "markers": ["c2"],
+      "reference_answer": "可以采用竞争性谈判或者询价方式。"
+    },
+    {
+      "id": "F-04",
+      "category": "fact",
+      "difficulty": "easy",
+      "question": "采购验收由哪些部门共同完成？",
+      "markers": ["c4"],
+      "reference_answer": "由使用部门与仓储部门共同完成。"
+    },
+    {
+      "id": "F-05",
+      "category": "fact",
+      "difficulty": "medium",
+      "question": "验收不合格的应当在几个工作日内通知供应商退换？",
+      "markers": ["c4"],
+      "reference_answer": "三个工作日内。",
+      "note": "数字型事实 —— 也是『引用内容支撑性校验』最容易抓到改写的一类。"
+    },
+    {
+      "id": "F-06",
+      "category": "fact",
+      "difficulty": "medium",
+      "question": "财务部门付款前应当核对哪三份单据？",
+      "markers": ["c5"],
+      "reference_answer": "订单、验收单与发票。"
+    },
+    {
+      "id": "F-07",
+      "category": "fact",
+      "difficulty": "easy",
+      "question": "付款应当在什么之后进行？",
+      "markers": ["c5"],
+      "reference_answer": "应当在验收合格之后进行。"
+    },
+    {
+      "id": "F-08",
+      "category": "fact",
+      "difficulty": "medium",
+      "question": "差旅费管理办法规定普通员工出差住宿费每晚上限是多少？",
+      "markers": ["t1"],
+      "reference_answer": "普通员工每晚上限四百元。",
+      "note": "**跨版本的陷阱题**：2025 版写的是三百元。只命中当前生效版本才算对。"
+    },
+
+    {
+      "id": "C-01",
+      "category": "condition",
+      "difficulty": "medium",
+      "question": "什么情况下采购申请不能提交？",
+      "markers": ["c3"],
+      "reference_answer": "没有预算的采购申请一律不得提交。",
+      "note": "条件 + 否定语气。『不得提交』被改写成『可以先提交』是最危险的引用错误。"
+    },
+    {
+      "id": "C-02",
+      "category": "condition",
+      "difficulty": "medium",
+      "question": "所有采购活动对预算有什么要求？",
+      "markers": ["c3"],
+      "reference_answer": "所有采购活动必须有预算。"
+    },
+    {
+      "id": "C-03",
+      "category": "condition",
+      "difficulty": "medium",
+      "question": "三者金额一致才可以付款，指的是哪三者？",
+      "markers": ["c5"],
+      "reference_answer": "订单、验收单与发票三者的金额一致。"
+    },
+    {
+      "id": "C-04",
+      "category": "condition",
+      "difficulty": "hard",
+      "question": "如果采购金额刚好是十万元，应该走公开招标吗？",
+      "markers": ["c2"],
+      "reference_answer": "条文写的是『超过十万元』，十万元本身未超过，落在『五万元至十万元之间』那一档。",
+      "note": "**边界题**：模型需要正确处理『超过』是开区间。这类问题能看出它有没有在读条文。"
+    },
+    {
+      "id": "C-05",
+      "category": "condition",
+      "difficulty": "medium",
+      "question": "出差补助按什么计算？",
+      "markers": ["t3"],
+      "reference_answer": "每人每天一百二十元，按实际出差天数计算。"
+    },
+    {
+      "id": "C-06",
+      "category": "condition",
+      "difficulty": "medium",
+      "question": "市内交通费怎么报销？上限是多少？",
+      "markers": ["t2"],
+      "reference_answer": "凭票报销，每人每天上限八十元。"
+    },
+
+    {
+      "id": "V-01",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "question": "员工出差住宿费的上限标准是多少？",
+      "markers": ["t1"],
+      "reference_answer": "普通员工每晚四百元、部门负责人每晚六百元（2026 版）。",
+      "note": "**核心的跨版本题**：只应命中 2026 版（[[t1]]），不许命中 2025 版（[[t1-old]]）。"
+    },
+    {
+      "id": "V-02",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "question": "市内交通费的每日上限是多少？",
+      "markers": ["t2"],
+      "reference_answer": "每人每天上限八十元（2026 版）。",
+      "note": "2025 版是五十元 —— 命中旧版就会答错。"
+    },
+    {
+      "id": "V-03",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "question": "出差补助每人每天多少钱？",
+      "markers": ["t3"],
+      "reference_answer": "每人每天一百二十元（2026 版）。",
+      "note": "2025 版是一百元。"
+    },
+
+    {
+      "id": "L-01",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "question": "多少钱要招标啊？",
+      "markers": ["c2"],
+      "reference_answer": "超过十万元的采购应当公开招标。",
+      "note": "**口语化问法**：与条文用词重合度低。本地哈希 embedding 大概率命中不了 —— 这正是『哈希 embedding 只能验证链路、不能评估效果』的证据；换 bge-m3 之后应当明显改善。"
+    },
+    {
+      "id": "L-02",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "question": "没预算能先报吗？",
+      "markers": ["c3"],
+      "reference_answer": "不能，没有预算的采购申请一律不得提交。",
+      "note": "口语化 + 否定。"
+    },
+    {
+      "id": "L-03",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "question": "东西收得不合格怎么办？",
+      "markers": ["c4"],
+      "reference_answer": "应当在三个工作日内通知供应商退换。",
+      "note": "『东西收得不合格』与条文『验收不合格』几乎没有共同词。"
+    },
+    {
+      "id": "L-04",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "question": "报销住宿费有什么标准吗？",
+      "markers": ["t1"],
+      "reference_answer": "按职级限额，普通员工每晚四百元、部门负责人每晚六百元。"
+    },
+    {
+      "id": "L-05",
+      "category": "colloquial",
+      "difficulty": "hard",
+      "question": "想买东西但是账上没钱，能不能先买了再说？",
+      "markers": ["c3"],
+      "reference_answer": "不能。所有采购活动必须有预算，没有预算的申请不得提交。",
+      "note": "最口语化的一条：与条文的字面重合度极低，是检验语义检索能力的试金石。"
+    },
+
+    {
+      "id": "U-01",
+      "category": "unanswerable",
+      "difficulty": "easy",
+      "question": "年假有多少天？",
+      "markers": [],
+      "reference_answer": "制度中没有找到相关规定。",
+      "note": "**无答案问题**：知识库里没有人事假期的制度。正确行为是明确说没找到，而不是拿采购条文硬答。`expected_chunks` 为空 → Recall 为『不适用』。"
+    },
+    {
+      "id": "U-02",
+      "category": "unanswerable",
+      "difficulty": "easy",
+      "question": "公司的报销发票需要贴在哪里？",
+      "markers": [],
+      "reference_answer": "制度中没有找到相关规定。"
+    },
+    {
+      "id": "U-03",
+      "category": "unanswerable",
+      "difficulty": "medium",
+      "question": "员工持股计划怎么参与？",
+      "markers": [],
+      "reference_answer": "制度中没有找到相关规定。",
+      "note": "与『钱』沾边但知识库里没有 —— 用来验证阈值判定没有把不相干的采购条文递上去。"
+    },
+    {
+      "id": "U-04",
+      "category": "unanswerable",
+      "difficulty": "medium",
+      "question": "公司的年会在什么时候举办？",
+      "markers": [],
+      "reference_answer": "制度中没有找到相关规定。"
+    },
+    {
+      "id": "U-05",
+      "category": "unanswerable",
+      "difficulty": "hard",
+      "question": "采购金额超过一亿元的，需要经过董事会审批吗？",
+      "markers": [],
+      "reference_answer": "制度中没有找到相关规定。",
+      "note": "**最难的一条无答案问题**：它和第二条（采购金额分档）字面高度重合，检索**一定会**把分档那条递上来 —— 但那一档只写到『十万元以上公开招标』，**没有规定一亿元以上要董事会审批**。这条专门用来验证：模型拿着相关片段时，会不会把没有的层级**编出来**。"
+    }
+  ]
+}

@@ -1,0 +1,653 @@
+{
+  "summary": {
+    "cases_total": 27,
+    "cases_ok": 27,
+    "cases_failed": 0,
+    "retrieval": {
+      "k": 5,
+      "cases_total": 22,
+      "cases_scored": 22,
+      "recall_skipped": 0,
+      "recall": 1.0,
+      "precision": 0.3333333333333333,
+      "hit_rate": 1.0,
+      "mrr": 0.8787878787878788,
+      "mrr_cases": 22,
+      "ndcg": 0.9101690461039014
+    },
+    "generation": {
+      "support_rate_mean": 1.0,
+      "support_rate_scored": 21,
+      "support_problem_counts": {
+        "CITATION_NUMBER_UNSUPPORTED": 0,
+        "CITATION_NEGATION_FLIPPED": 0,
+        "CITATION_MISPLACED": 1
+      },
+      "citation_integrity_failures": 0,
+      "refusal_on_unanswerable": "3/5",
+      "over_refusal_on_answerable": 3,
+      "grounded_rate": 0.8636363636363636,
+      "grounded_scored": 22
+    },
+    "embedding_model": "local-hash-256"
+  },
+  "results": [
+    {
+      "id": "F-01",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "采购金额超过十万元的，应当采用什么方式？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6317418813705444,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "F-02",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "采购金额低于五万元的可以采用什么采购方式？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6419407320600969,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "F-03",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "采购金额在五万元至十万元之间的，可以采用哪些方式？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6097498121783084,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "F-04",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "采购验收由哪些部门共同完成？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.5398178696632385,
+      "retrieved": [
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "F-05",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "验收不合格的应当在几个工作日内通知供应商退换？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.4034345746040344,
+      "retrieved": [
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "F-06",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "财务部门付款前应当核对哪三份单据？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.4003204107284546,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "F-07",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "付款应当在什么之后进行？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.4096732437610626,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "F-08",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "差旅费管理办法规定普通员工出差住宿费每晚上限是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.46420708512025644,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ]
+    },
+    {
+      "id": "C-01",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "什么情况下采购申请不能提交？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.3035692274570465,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "C-02",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "所有采购活动对预算有什么要求？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.19165536761283875,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "C-03",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "三者金额一致才可以付款，指的是哪三者？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.30473583936691284,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "C-04",
+      "category": "condition",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "如果采购金额刚好是十万元，应该走公开招标吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.3460192783480669,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "C-05",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "出差补助按什么计算？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[3]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n（本条回答的来源校验未通过，请以制度原文为准。）",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.2888888968361739,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4"
+      ],
+      "citation_problems": [],
+      "support_problems": [
+        {
+          "kind": "CITATION_MISPLACED",
+          "detail": "这句话有实质内容，但**上方 4 句之内没有任何引用**：「第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制…」—— 无法判断它依据哪一段制度",
+          "sentence_index": 9
+        }
+      ],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ]
+    },
+    {
+      "id": "C-06",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "市内交通费怎么报销？上限是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.3271651468525796,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ]
+    },
+    {
+      "id": "V-01",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "员工出差住宿费的上限标准是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.3698001283526351,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ]
+    },
+    {
+      "id": "V-02",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "市内交通费的每日上限是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.35131011299430714,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ]
+    },
+    {
+      "id": "V-03",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "出差补助每人每天多少钱？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.4992301464539688,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ]
+    },
+    {
+      "id": "L-01",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "多少钱要招标啊？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 3 条但全部低于相似度阈值 0.15（最高 0.027），未调用模型",
+      "top_score": 0.027246211536115728,
+      "retrieved": [
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "L-02",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "没预算能先报吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.18544956104307064,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "L-03",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "东西收得不合格怎么办？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 3 条但全部低于相似度阈值 0.15（最高 0.137），未调用模型",
+      "top_score": 0.13677488267421722,
+      "retrieved": [
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "L-04",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "报销住宿费有什么标准吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.2211083190972618,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ]
+    },
+    {
+      "id": "L-05",
+      "category": "colloquial",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "想买东西但是账上没钱，能不能先买了再说？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 3 条但全部低于相似度阈值 0.15（最高 0.101），未调用模型",
+      "top_score": 0.10074423854018699,
+      "retrieved": [
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ]
+    },
+    {
+      "id": "U-01",
+      "category": "unanswerable",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "年假有多少天？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 3 条但全部低于相似度阈值 0.15（最高 0.082），未调用模型",
+      "top_score": 0.08164965619744935,
+      "retrieved": [
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": []
+    },
+    {
+      "id": "U-02",
+      "category": "unanswerable",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "公司的报销发票需要贴在哪里？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.1999325454235077,
+      "retrieved": [
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": []
+    },
+    {
+      "id": "U-03",
+      "category": "unanswerable",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "员工持股计划怎么参与？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 3 条但全部低于相似度阈值 0.15（最高 0.051），未调用模型",
+      "top_score": 0.05129058286547661,
+      "retrieved": [
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093",
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": []
+    },
+    {
+      "id": "U-04",
+      "category": "unanswerable",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "公司的年会在什么时候举办？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 3 条但全部低于相似度阈值 0.15（最高 0.142），未调用模型",
+      "top_score": 0.141639415670616,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": []
+    },
+    {
+      "id": "U-05",
+      "category": "unanswerable",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "采购金额超过一亿元的，需要经过董事会审批吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《M11 页面实测制度 MV6S0493》（第 1 版）\n采购管理办法（节选）\n（本文件编号：M11PAGE-MV6S0493）\n\n第一章 总则\n第一条 为规范本公司采购行为、明确职责分工、降低采购成本，制定本办法。\n\n[3]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.15，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.3620959520339966,
+      "retrieved": [
+        "ab1ca8a7-8cf9-485b-b4d1-22868b645b6d",
+        "98902124-0c68-40b9-8318-74fb7e4766d4",
+        "bbb92e06-6c77-4538-b284-5d88e911b093"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": []
+    }
+  ]
+}

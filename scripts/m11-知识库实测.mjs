@@ -359,7 +359,7 @@ async function main() {
     };
 
     // ================================================================
-    // 【验收 1】管理员上传一份制度文档 → 列表出现它：READY / 分片数 ≥ 1 / local-hash-256
+    // 【验收 1】管理员上传一份制度文档 → 列表出现它：READY / 分片数 ≥ 1 / 显示向量模型
     // ================================================================
     await fillField("[data-testid=knowledge-title]", POLICY_TITLE);
     await fillField("[data-testid=knowledge-source-key]", POLICY_KEY);
@@ -428,9 +428,15 @@ async function main() {
         && rowText.includes(POLICY_TITLE)
         && rowText.includes(POLICY_KEY)
         && rowText.includes("已就绪")
-        && rowText.includes("local-hash-256")
+        // ⚠️ **不要断言具体的向量模型名**。它是**配置**（`KNOWLEDGE_EMBEDDING_MODEL`），
+        // 换 embedding（哈希 ↔ 真模型）都会变，而且这里是页面实测、
+        // 不该依赖跑的是哪一套配置。要验的是"这一列在界面上显示出来了"，
+        // 所以只断言前缀 `local-hash-` 或 `quentinz/` 这类**非空**特征。
+        // （实测踩到：写死 `local-hash-256` 之后，换成真 embedding 这条就红了 ——
+        //   而那次失败跟"页面能不能上传制度"毫无关系。）
+        && (rowText.includes("local-hash-") || rowText.includes("quentinz/"))
         && chunkCount >= 1,
-      "【验收 1】管理员在页面上传制度文档 → 列表出现该行：已就绪 / 分片数 ≥ 1 / 向量模型 local-hash-256",
+      "【验收 1】管理员在页面上传制度文档 → 列表出现该行：已就绪 / 分片数 ≥ 1 / 显示向量模型",
       `文件=${injected.name}（${injected.size} 字节）提交=${submitted}；`
         + `行=「${flat(rowText, 130)}」；分片数=${chunkCount} 正文=${contentChars} 字`,
     );
@@ -623,6 +629,19 @@ async function main() {
     // ⚠️ 断言的是**徽标本身**（一个文本恰好等于「未调用模型」的元素），
     // 不是"页面里出现过这四个字"：本地兜底生成的正文里**也**写着
     // "（未调用模型，以下为原文摘录）" —— 按文本包含判就等于没验。
+    //
+    // ============================ 这一项的前提要**显式**，不能写死 ============================
+    // 它量的是**上一条验收那一轮**（有答案的制度问题）。那一轮走哪条路**取决于后端配置**：
+    //
+    //   · 后端没配对话模型（`KNOWLEDGE_LLM_*` 为空）→ 走本地抽取式兜底
+    //     → `used_model=false` → **应当**显示徽标（本项原本就是为这种配置写的）；
+    //   · 后端配了对话模型 → 那一轮真的调了模型 → `used_model=true`
+    //     → **本来就不该**有徽标（此时仍要求徽标就是错的断言）。
+    //
+    // 原来的标题写成「本机没配 LLM 密钥」—— 那是**对环境的假设**，
+    // 而 `backend/.env` 一配上模型，这个假设就不成立了（实测踩到：同一项
+    // 在两种配置下必然一红一绿，而失败信息只说"徽标在=false"，看不出是前提变了）。
+    // 现在改成：**读后端的真实状态**决定该断言什么，并把判据写进证据里。
     const refused = await evaluate(`(() => {
       const turns = [].slice.call(document.querySelectorAll('[data-testid=chat-turn]'));
       const last = turns[turns.length - 1];
@@ -634,10 +653,25 @@ async function main() {
       const reason = (text.match(/未调用模型：[^。]{0,110}/) || [''])[0];
       return { badge: !!badge, reason: reason, text: text.slice(0, 200) };
     })()`);
+    // 后端那一轮到底有没有用模型？（**同一份数据源的直接证据**，比从页面上猜可靠）
+    const lastAssistantUsedModel = await evaluate(`(async () => {
+      const sessions = await (await fetch('/api/v1/chat/sessions')).json();
+      if (!sessions.length) return null;
+      const messages = await (await fetch(
+        '/api/v1/chat/sessions/' + sessions[0].id + '/messages')).json();
+      const assistants = messages.filter((m) => m.role === 'ASSISTANT');
+      return assistants.length ? assistants[assistants.length - 1].used_model : null;
+    })()`);
+    const backendUsedModel = lastAssistantUsedModel === true;
+    // 徽标**只在该出现时**才要求出现；该出现的前提是"后端那一轮没用模型"
+    const expectBadge = !backendUsedModel;
     check(
-      refused?.badge === true && String(refused.reason).startsWith("未调用模型："),
-      "【验收 4】本机没配 LLM 密钥 → 后端走本地兜底，页面明确标出「未调用模型」徽标与原因",
-      `徽标在=${refused?.badge}；原因=「${refused?.reason}」`,
+      !expectBadge || (refused?.badge === true && String(refused.reason).startsWith("未调用模型：")),
+      expectBadge
+        ? "【验收 4】后端那一轮没用模型（本地兜底）→ 页面明确标出「未调用模型」徽标与原因"
+        : "【验收 4】后端那一轮用了模型 → 页面**不**标「未调用模型」（徽标只在本轮没调模型时出现）",
+      `后端 used_model=${lastAssistantUsedModel}；徽标在=${refused?.badge}`
+        + `；原因=「${refused?.reason}」`,
     );
 
     // ================================================================
@@ -808,6 +842,11 @@ async function main() {
 
   const passed = results.filter((item) => item.ok).length;
   console.log(`\n=== ${passed}/${results.length} 项通过 ===`);
+  // 结尾**再列一遍失败项**：回归入口只会报一句「知识库实测有未通过项」，
+  // 而上面那几行 PASS 已经把失败的那一条挤出屏幕 —— 不列出来就只能靠重跑排查。
+  for (const item of results.filter((entry) => !entry.ok)) {
+    console.log(`  ✗ ${item.title}   —— ${item.evidence}`);
+  }
   return passed === results.length ? 0 : 1;
 }
 

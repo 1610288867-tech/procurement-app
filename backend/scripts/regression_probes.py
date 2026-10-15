@@ -614,6 +614,131 @@ def main() -> int:
             f"事件 {len(replay_events)} 条 / 流水 {replay_ledger}",
         )
 
+        # ============================================================ 接缝⑤：模型用量帧
+        #
+        # **为什么这条必须是探针而不是普通测试**：它是"**不会报错、只会算错**"的典型。
+        # 流式接口把 token 用量放在**最后一帧**，而那一帧的 `choices` 是**空数组**：
+        #
+        #     data: {"choices": [], "usage": {"prompt_tokens": 12, ...}}
+        #
+        # 正文解析器取不到 `choices[0]` 就返回空串 —— 用量**被静默丢掉**，
+        # 于是 `prompt_tokens` 永远是 0。而"永远是 0"很容易被读成"这个模型不要钱"，
+        # 成本报表会一直是 0 却没人发现（这正是 PROGRESS 里那三条约束的同一类毛病）。
+        #
+        # 探针直接喂一帧真实的用量帧，断言它被解析出来 —— 不依赖任何真模型。
+        import json as _json
+
+        from app.domain.cost import ModelPrice, estimate_cost_micros
+        from app.infrastructure.chat_models import _parse_sse_line, _parse_usage_line
+
+        usage_frame = "data: " + _json.dumps(
+            {
+                "choices": [],
+                "model": "qwen2.5:7b",
+                "usage": {"prompt_tokens": 12, "completion_tokens": 34},
+            }
+        )
+        parsed_usage = _parse_usage_line(usage_frame)
+        check(
+            parsed_usage is not None
+            and parsed_usage.prompt_tokens == 12
+            and parsed_usage.completion_tokens == 34,
+            "接缝⑤：用量帧（`choices` 为空）能被解析出来 —— 不会被正文解析器丢掉",
+            f"解析结果={parsed_usage}",
+        )
+        # 正文帧**不能**被误判成用量帧（否则正文会整段消失）
+        content_frame = "data: " + _json.dumps(
+            {"choices": [{"delta": {"content": "根据[1]，应当公开招标。"}}]}
+        )
+        check(
+            _parse_usage_line(content_frame) is None
+            and _parse_sse_line(content_frame) != "",
+            "接缝⑤续：正文帧不被误判为用量帧，且正文仍能取到",
+            f"用量={_parse_usage_line(content_frame)} 正文={_parse_sse_line(content_frame)!r}",
+        )
+
+        # 成本：**"未知"与"0 元"必须分开**（本地模型是 0，拿不到用量是未知）
+        price = ModelPrice.from_yuan_per_million(input_yuan=2.0, output_yuan=8.0)
+        unknown_cost = estimate_cost_micros(
+            prompt_tokens=None, completion_tokens=34, price=price
+        )
+        local_cost = estimate_cost_micros(
+            prompt_tokens=12,
+            completion_tokens=34,
+            price=ModelPrice(input_micros_per_million=0, output_micros_per_million=0),
+        )
+        check(
+            unknown_cost is None and local_cost == 0,
+            "接缝⑤续：拿不到用量 → 成本『未知』(None)；本地模型 → 成本『确实是 0』",
+            f"未知={unknown_cost} 本地={local_cost}",
+        )
+
+        # ============================================================ 接缝⑥：配额要把来源算进去
+        #
+        # **这条抓的是一个真实踩到的坑**：第一版用 `getattr(source, "content", "")`
+        # 取来源正文，但 HTTP 路径拿到的 `body["sources"]` 是**已经序列化过的字典**：
+        #
+        #     getattr({"content": "..."}, "content", "")  →  ""    ← 不报错，静默取空
+        #
+        # 后果：**每条来源都算成 0 token**，配额只按"问题 + 回答"记账（实测 20），
+        # 而上下文主体是来源（实测该记 148）。配额上限因此形同虚设。
+        # 这是典型的"不会报错、只会算错"，只能靠对账发现 —— 所以放进探针。
+        from app.boundaries.http.knowledge import _estimate_tokens_for_quota
+
+        sources_as_dicts = [{"content": "第二条 采购金额超过十万元的，应当进行公开招标。" * 8}]
+        charged = _estimate_tokens_for_quota(
+            question="多少钱要招标？", sources=sources_as_dicts, answer="根据[1]，应当公开招标。"
+        )
+        question_only = len("多少钱要招标？")
+        check(
+            charged > question_only * 5,
+            "接缝⑥：配额记账要把来源片段算进去（字典形状的来源不能被静默取空）",
+            f"记账 {charged} token，而问题本身只有 {question_only} 字",
+        )
+
+        # ============================================================ 接缝⑦：Agent 的审计与分流
+        #
+        # **两个实测踩到的"不报错只算错"**（M12 的 Agent 路径）：
+        #
+        #   ① `used_model` 说谎。Agent 的 `decision.use_model` 是 False（检索没依据），
+        #      而它**确实调用了模型**（去查业务数据）。
+        #      `_used_remote` 原本只判 `isinstance(chat, LocalExtractiveChat)` ——
+        #      那只覆盖 `stream()`，而 Agent 走的是 `stream_turn()`。
+        #      于是库里把一个花了几秒模型时间的回答记成"未调用模型"。
+        #      **这是一条验收项字段，不能给它错的值。**
+        #
+        #   ② 分流判据只加在流式那条路 → 非流式照旧回"制度中没有找到相关规定"，
+        #      而 curl 与集成测试打的偏偏是非流式：**功能写了却没效果**。
+        from app.application.coordinators.knowledge import KnowledgeCoordinator
+
+        class _StubChat:
+            supports_tools = True
+            name = "probe-stub"
+
+        class _StubDecision:
+            use_model = False
+
+        coordinator = KnowledgeCoordinator.__new__(KnowledgeCoordinator)
+        coordinator._chat = _StubChat()  # type: ignore[assignment]
+        agent_used = coordinator._used_remote(_StubDecision(), agent_used=True)
+        no_agent = coordinator._used_remote(_StubDecision(), agent_used=False)
+        check(
+            agent_used is True and no_agent is False,
+            "接缝⑦：Agent 走 `stream_turn` 也算『调用了模型』（used_model 不能说谎）",
+            f"agent_used→{agent_used}  无 Agent→{no_agent}",
+        )
+        # 分流判据必须**只有一处**（`ask` 与 `ask_stream` 调同一个方法）。
+        # 这里断言"没注入工具依赖时不走 Agent"—— 任何一条输入被漏掉，
+        # 两条路就会给出不同结论，而那种不一致极难发现。
+        coordinator._purchase = None  # type: ignore[assignment]
+        coordinator._approval = None  # type: ignore[assignment]
+        stub_prepared = {"decision": _StubDecision()}
+        check(
+            coordinator._should_use_agent(stub_prepared) is False,
+            "接缝⑦续：没注入工具依赖时不走 Agent（两条路共用同一个判据）",
+            f"should_use_agent={coordinator._should_use_agent(stub_prepared)}",
+        )
+
     finally:
         for session in (admin, requester, other):
             # 关连接失败不该盖住真正的失败

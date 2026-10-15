@@ -84,3 +84,15 @@ class PermissionDeniedError(BusinessError):
 
     def __init__(self, message: str = "权限不足") -> None:
         super().__init__(message, status_code=403, code="FORBIDDEN")
+
+
+class ChatQuotaExceededError(BusinessError):
+    """问答的 token 配额用完（或问得太频繁）—— 对应 HTTP 429。
+
+    与 `TooManyAttemptsError`（登录限流）分开成一个类型，因为**触发条件与缓解方式都不同**：
+    登录限流是"密码可能被爆破"，缓解靠等；这里是"token 成本"，缓解靠等或提额。
+    两者都用 429，但 `code` 不同，前端据此可以说不同的话。
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=429, code="CHAT_QUOTA_EXCEEDED")

@@ -36,6 +36,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -43,9 +45,26 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from app.application.ports import ChatModelPort, ObjectStorePort, UnitOfWork
+from app.application.agent import AgentStep, run_agent
+from app.application.coordinators.approval import ApprovalCoordinator
+from app.application.coordinators.auth import Principal
+from app.application.coordinators.purchase import PurchaseCoordinator
+from app.application.ports import (
+    ChatModelPort,
+    EmbeddingPort,
+    ModelUsage,
+    ObjectStorePort,
+    UnitOfWork,
+)
+from app.application.tools import agent_used_tools
 from app.domain.chunking import chunk_text, normalize_text
-from app.domain.embedding import VECTOR_DIM, embed_text, embedding_model_name
+from app.domain.citation_support import (
+    SupportProblem,
+    check_citation_support,
+    support_rate,
+)
+from app.domain.cost import ModelPrice, estimate_cost_micros
+from app.domain.embedding import VECTOR_DIM
 from app.domain.grounded_answer import (
     CITATION_WARNING,
     SYSTEM_PROMPT,
@@ -54,9 +73,48 @@ from app.domain.grounded_answer import (
     check_citation_integrity,
     decide_grounding,
 )
+from app.domain.model_pricing import parse_model_prices
 from app.errors import BusinessError, ConflictError, NotFoundError
 from app.infrastructure.chat_models import LocalExtractiveChat
 from app.infrastructure.repositories.knowledge_repo import KnowledgeRepository
+
+#: 与 `app/main.py` 用同一个 logger 名（`procurement`）——
+#: 这样日志的格式、级别与输出目标由**一处**决定，不在这里另起一套。
+logger = logging.getLogger("procurement")
+
+
+def _merge_details(
+    support_details: list[dict[str, Any]],
+    *,
+    agent_steps: list[dict[str, Any]] | None,
+    agent_stop_reason: str | None,
+) -> list[dict[str, Any]] | None:
+    """把"引用支撑性问题"与"Agent 执行轨迹"合并进同一个 JSONB 列。
+
+    ============================ 为什么合进 `support_details` 而不加新列 ============================
+    Agent 轨迹是**诊断信息**，它不是"回答质量"的一部分，查询方式也还不确定。
+    为一个用途未定的东西加一列（还要一条迁移）不划算 ——
+    而 `support_details` 本来就是"这次回答的一些结构化问题与说明"，语义上放得下。
+
+    代价说清楚：`support_details` 因此**不再只装 `SupportProblem`**，
+    读它的人要知道里面可能有一个 `kind == "agent"` 的条目。
+    所以这里**显式用 `kind` 区分**，而不是靠位置或额外字段。
+
+    `agent_steps` 为空时不写任何东西（**不加一个空壳条目**：
+    那会让"这次是 Agent 回答"与"这次不是"看起来一样）。
+    """
+    merged = list(support_details)
+    if agent_steps:
+        merged.append(
+            {
+                "kind": "agent",
+                "detail": f"Agent 执行 {len(agent_steps)} 步，停止原因 {agent_stop_reason}",
+                "sentence_index": None,
+                "steps": agent_steps,
+                "stop_reason": agent_stop_reason,
+            }
+        )
+    return merged or None
 
 #: 允许的制度文档类型。**刻意只有两种**：
 #: PDF 抽文本要额外的库（`pypdf` 之类），而那属于"要不要为 M11 再加一个依赖"的决定 ——
@@ -113,16 +171,33 @@ class KnowledgeCoordinator:
         knowledge: KnowledgeRepository,
         object_store: ObjectStorePort,
         chat_model: ChatModelPort,
+        embedder: EmbeddingPort,
         uow: UnitOfWork,
         top_k: int,
         min_score: float,
+        price_config: str = "",
+        purchase: PurchaseCoordinator | None = None,
+        approval: ApprovalCoordinator | None = None,
     ) -> None:
         self._knowledge = knowledge
         self._store = object_store
         self._chat = chat_model
+        #: 算向量的实现（本地哈希 / 真模型）。**由边界层按配置选**，这里不做判断 ——
+        #: 与 `chat_model` 同一个理由：测试要注入一个"故意给错维度"的实现来验证校验，
+        #: 而"选哪个实现"写死在协调者里，那条验证就只能靠真模型碰运气。
+        self._embedder = embedder
         self._uow = uow
         self._top_k = top_k
         self._min_score = min_score
+        #: 模型价格表配置（`model=输入价,输出价;...`），用于成本核算。
+        #: **保留原始字符串**而不是解析后的字典：坏配置要在**每次真正用到时**
+        #: 报一次警告（而不是启动时静默丢掉），而且改了 .env 重启即生效。
+        self._price_config = price_config
+        #: Agent 工具要用的两个协调者。**默认 `None` = 关掉 Agent 路径**：
+        #: 没有它们时行为与加 Agent 之前**完全一致**（直接回"制度中没有找到相关规定"）。
+        #: 这个默认值让"加了 Agent"这件事可以被逐层接上，而不是一次性改完所有装配点。
+        self._purchase = purchase
+        self._approval = approval
 
     # ------------------------------------------------------------------ 文档入库
 
@@ -213,7 +288,7 @@ class KnowledgeCoordinator:
             filename=filename,
             content_type=content_type,
             content=text,
-            embedding_model=embedding_model_name(),
+            embedding_model=self._embedder.name,
             uploaded_by=actor_id,
         )
         try:
@@ -266,15 +341,18 @@ class KnowledgeCoordinator:
                 status_code=422,
                 code="KNOWLEDGE_CHUNK_EMPTY",
             )
+        # 向量**批量算**：一份制度几十个片段，逐条发 HTTP 会把"上传一份制度"
+        # 变成几十次往返（真模型时这一步是主要耗时）。
+        vectors = await self._embedder.embed([chunk.content for chunk in chunks])
         prepared = [
             (
                 chunk.chunk_no,
                 chunk.content,
                 chunk.start_offset,
                 chunk.end_offset,
-                embed_text(chunk.content),
+                vector,
             )
-            for chunk in chunks
+            for chunk, vector in zip(chunks, vectors, strict=True)
         ]
         count = await self._knowledge.replace_chunks(doc_id, prepared)
         await self._knowledge.mark_ready(doc_id)
@@ -366,13 +444,41 @@ class KnowledgeCoordinator:
         user_id: uuid.UUID,
         question: str,
         session_id: uuid.UUID | None,
+        actor: Principal | None = None,
     ) -> dict[str, Any]:
         """非流式提问：把整段回答拼好再返回（给 curl / 测试用）。
 
         与 `ask_stream` **共用同一段逻辑**（`_prepare`），
         所以两条路不会出现"流式说没依据、非流式却调了模型"这种不一致。
+
+        ⚠️ 实测踩到：Agent 分流**只加在 `ask_stream` 里**时，
+        非流式那条路会照旧回"制度中没有找到相关规定"，
+        而 curl 与集成测试打的偏偏是非流式那条 ——
+        表现是"功能明明写了却没有效果"。所以两条路的分流由
+        `_should_use_agent` **同一个判据**给出。
         """
         prepared = await self._prepare(user_id=user_id, question=question, session_id=session_id)
+        prepared["actor"] = actor
+        # 用量收在一个单元素列表里：闭包要**写回外层变量**，
+        # 而 Python 的嵌套函数对不可变外层变量只能读（`nonlocal` 在这个作用域层级不好用）。
+        captured: list[ModelUsage] = []
+
+        model_started = time.perf_counter()
+
+        if self._should_use_agent(prepared):
+            answer, steps, usage, stop_reason = await self._collect_agent(
+                prepared, question=question
+            )
+            model_ms = int((time.perf_counter() - model_started) * 1000)
+            return await self._finish(
+                prepared,
+                answer=answer,
+                model_ms=model_ms,
+                usage=usage,
+                agent_steps=steps,
+                agent_stop_reason=stop_reason,
+            )
+
         if not prepared["decision"].use_model:
             answer = prepared["decision"].fallback_answer
         else:
@@ -381,12 +487,41 @@ class KnowledgeCoordinator:
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=prepared["user_prompt"],
                 sources=prepared["sources"],
+                on_usage=captured.append,
             ):
                 chunks.append(piece)
             answer = "".join(chunks)
-        return await self._finish(prepared, answer=answer)
+        model_ms = int((time.perf_counter() - model_started) * 1000)
+        return await self._finish(
+            prepared,
+            answer=answer,
+            model_ms=model_ms,
+            usage=captured[-1] if captured else None,
+        )
 
-    def _used_remote(self, decision: Any) -> bool:
+    def _should_use_agent(self, prepared: dict[str, Any]) -> bool:
+        """这次提问该走 Agent 还是走制度问答。
+
+        ============================ 判据只有一条：**检索给的依据够不够** ============================
+            有依据（超过阈值）      → 制度问答（依据原文回答 + 两层引用校验）
+            没依据 + 模型会用工具    → Agent（去查真实业务数据）
+            没依据 + 模型不会用工具  → 原来的"制度中没有找到相关规定"
+
+        为什么不额外看"问题里有没有关键词"：那要靠规则去猜自然语言，
+        猜错的方向有两个（把数据问题当制度问题、反之），而两个方向都很难被发现。
+        **相似度是本系统已经算出来的信号**，用它更稳、也更容易解释。
+
+        `ask` 与 `ask_stream` **都调这一个方法** —— 判据只有一处，
+        两条路不可能给出不同的结论。
+        """
+        return (
+            not prepared["decision"].use_model
+            and self._chat.supports_tools
+            and self._purchase is not None
+            and self._approval is not None
+        )
+
+    def _used_remote(self, decision: Any, *, agent_used: bool = False) -> bool:
         """这次回答有没有真的调用**远端模型**。
 
         ⚠️ 语义是"远端模型有没有被调用"，**不是**"要不要生成回答"。
@@ -394,9 +529,18 @@ class KnowledgeCoordinator:
         但一次网络调用都没发生 —— 而 `used_model` 这个字段存在的意义，
         正是让"未调用模型"这件事在界面与日志里看得见（一条验收项）。
         实测踩到：把它写成 `decision.use_model`，那条验收项在本地兜底下永远显示错误。
-        `ask` 与 `ask_stream` **两条路都要用它** —— 只改一条的后果是
-        "流式说没调模型、非流式说调了"，而测试打的往往是非流式那条。
+
+        ============================ 第二个踩到的坑：Agent 走的是另一条路 ============================
+        上面那个 `isinstance(self._chat, LocalExtractiveChat)` 判断**只覆盖 `stream()`**。
+        Agent 走的是 `stream_turn()`，于是当 `decision.use_model` 是 False
+        （检索没依据）而模型**确实被调用了**（去查业务数据）时，
+        这个字段会返回 `False` —— **审计字段在说谎**。
+        实测踩到：一个明明花了 4 秒模型时间的 Agent 回答，库里记的是"未调用模型"。
+
+        所以调用方要把它知道的 Agent 事实传进来（`agent_used`）。
         """
+        if agent_used:
+            return True
         return decision.use_model and not isinstance(self._chat, LocalExtractiveChat)
 
     async def ask_stream(
@@ -405,6 +549,7 @@ class KnowledgeCoordinator:
         user_id: uuid.UUID,
         question: str,
         session_id: uuid.UUID | None,
+        actor: Principal | None = None,
     ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """流式提问：产出 `(事件名, 数据)`，由边界层翻成 SSE。
 
@@ -424,6 +569,9 @@ class KnowledgeCoordinator:
         prepared = await self._prepare(
             user_id=user_id, question=question, session_id=session_id
         )
+        # 把身份放进 `prepared`：Agent 分支要用它当**工具调用的权限来源**。
+        # 它由边界层传下来（就是那个已登录用户），协调者不自己查 —— 见 `_principal_for`。
+        prepared["actor"] = actor
         sources: list[Source] = prepared["sources"]
         decision = prepared["decision"]
         # `used_model` 的语义是"**远端模型**有没有被调用"，不是"要不要生成回答"。
@@ -431,19 +579,65 @@ class KnowledgeCoordinator:
         # （有依据、可以生成），但**一次网络调用都没发生**。
         # 实测踩到：把它写成 `decision.use_model`，于是"未调用模型"这条
         # 验收项在本地兜底下永远显示成"已调用" —— 而它恰恰是要证明这件事的字段。
-        used_remote = self._used_remote(decision)
+        #
+        # ⚠️ **Agent 分流要先算**：Agent 回答的 `decision.use_model` 是 False
+        # （检索没依据），但它**确实调用了模型**（去查业务数据）。
+        # 如果这里照旧用 `decision`，`meta` 会告诉前端"未调用模型"，
+        # 页面就会显示那个徽标 —— 而这是**一条验收项**，不能给它错的值。
+        #
+        # ⚠️ 但 `will_use_agent` **不等于"模型一定被使用"**（实测踩到）：
+        # Agent 若**一个工具都没调**，`_answer_with_agent` 会退回本地兜底那句确定性话术
+        # （模型答不了制度问题，见那边的说明）—— 那时采用的字**不是模型生成的**，
+        # `used_model` 就该是 `False`。
+        #
+        # ============================ 预报 vs 事实 ============================
+        # `meta` 必须**在正文之前**发出去（用户要先看到引用来源），所以它只能**预报**；
+        # 而"模型到底有没有被采用"要到 Agent 跑完才知道 —— **预报不可能总对**。
+        # 所以真相走 `done`：`done.used_model` 由 `_finish` 按事实算
+        # （见那里 `agent_used_tools` 的说明）。前端拿 `done` 覆盖 `meta` 的预报。
+        will_use_agent = self._should_use_agent(prepared)
+        used_remote = self._used_remote(decision, agent_used=will_use_agent)
         yield (
             "meta",
             {
                 "session_id": str(prepared["session"].id),
                 "sources": [self._source_payload(source) for source in sources],
                 "used_model": used_remote,
-                "reason": self._reason(decision, used_remote=used_remote),
+                "reason": self._reason(
+                    decision,
+                    used_remote=used_remote,
+                    # 预报：这一刻只知道"会不会走 Agent"。**事实**在 `done` 里
+                    # （那里 `agent_ran` 按轨迹判断，前端应以 `done` 为准）。
+                    agent_ran=will_use_agent,
+                ),
                 "model": self._chat.name if used_remote else None,
             },
         )
 
         pieces: list[str] = []
+        usage: ModelUsage | None = None
+
+        def capture_usage(reported: ModelUsage) -> None:
+            """模型报用量时收下它（流式接口只在最后一帧报，且**可能不报**）。"""
+            nonlocal usage
+            usage = reported
+
+        # 模型耗时**只量这一段**：不含检索、不含落库。
+        # 分开量的理由见 `chat_messages.retrieval_ms` 的注释 ——
+        # 合起来只记一个"总耗时"就分不清该改检索还是该改模型。
+        model_started = time.perf_counter()
+
+        # ============================ 分流：见 `_should_use_agent` ============================
+        # 判据只有一处 —— 这里与 `ask` 调的是同一个方法。
+        # 复用上面已经算好的结果（同一个方法调两次虽然无害，但会让"判据只有一处"
+        # 这句话在代码里看起来不成立）。
+        if will_use_agent:
+            async for event in self._answer_with_agent(
+                prepared, question=question, model_started=model_started
+            ):
+                yield event
+            return
+
         if not decision.use_model:
             # **不调用模型**：直接给那句固定回答。文字不进模型、不进网络
             yield "delta", {"text": decision.fallback_answer}
@@ -454,6 +648,7 @@ class KnowledgeCoordinator:
                     system_prompt=SYSTEM_PROMPT,
                     user_prompt=prepared["user_prompt"],
                     sources=sources,
+                    on_usage=capture_usage,
                 ):
                     pieces.append(piece)
                     yield "delta", {"text": piece}
@@ -464,9 +659,28 @@ class KnowledgeCoordinator:
                 await self._record_failure(prepared, reason=f"模型调用失败：{exc}")
                 yield "error", {"message": f"模型调用失败：{exc}"}
                 return
+        model_ms = int((time.perf_counter() - model_started) * 1000)
 
-        result = await self._finish(prepared, answer="".join(pieces))
-        yield "done", {"message_id": result["message_id"], "citation_problems": result["citation_problems"]}
+        result = await self._finish(
+            prepared, answer="".join(pieces), model_ms=model_ms, usage=usage
+        )
+        yield "done", {
+            "message_id": result["message_id"],
+            "citation_problems": result["citation_problems"],
+            # 支撑性问题也随 `done` 发给前端与评测脚本 ——
+            # **评测脚本靠流式接口也能拿到指标**，不必为了统计再打一次非流式接口。
+            "support_problems": result["support_problems"],
+            "support_rate": result["support_rate"],
+            # 来源随 `done` 再带一次（`meta` 里已经给过）：边界层要在**记账时**
+            # 用它估算这次问答的 token 量，而 `meta` 事件早已流过。
+            # 上下文的主体是这些片段（5 条 × 600 字 ≈ 3000 token），不是那句问题。
+            "sources": result["sources"],
+            # token 与成本也随 `done` 出去：**拿得到就用真实值**，
+            # 拿不到就是 `None`（边界层会退化成估算上界去记配额）。
+            "prompt_tokens": result["prompt_tokens"],
+            "completion_tokens": result["completion_tokens"],
+            "estimated_cost_micros": result["estimated_cost_micros"],
+        }
 
     # ------------------------------------------------------------------ 内部
 
@@ -497,23 +711,32 @@ class KnowledgeCoordinator:
             session_id=session.id, role="USER", content=question, seq=seq
         )
 
-        query_embedding = embed_text(question)
+        # 检索耗时**把"算查询向量"也算进去**：真模型时这一步是检索的主要耗时
+        # （一次 HTTP 往返 + 一次前向），不算进去的话
+        # `retrieval_ms` 会显示成"1 毫秒"，让人以为检索很快、问题在别处。
+        retrieval_started = time.perf_counter()
+        query_embedding = (await self._embedder.embed([question]))[0]
         if not any(query_embedding):
-            # 问题里一个可检索的词都没有（例如全是标点）：**不检索**。
-            # 全零向量进 SQL 之后余弦距离没有意义（NULL 或 1），排序结果不可解释。
+            # 全零向量：**只有哈希实现在"问题里一个词都没有"时会给出**（例如全是标点）。
+            # 此时不检索 —— 全零向量与任何向量的余弦距离没有意义（NULL 或 1），
+            # 排序结果不可解释。
+            # ⚠️ 真模型不会返回全零向量，所以这个分支对它是死代码；
+            # 保留它是因为"哈希 + 离线"仍是支持的配置（见 `LocalHashEmbedding`）。
             sources: list[Source] = []
         else:
             rows = await self._knowledge.search_chunks(
                 query_embedding=query_embedding,
                 top_k=self._top_k,
                 # 只检索**当前模型**算的向量：混着检索的结果不可比（见仓库说明）
-                embedding_model=embedding_model_name(),
+                embedding_model=self._embedder.name,
             )
             sources = [self._to_source(index, row) for index, row in enumerate(rows, start=1)]
+        retrieval_ms = int((time.perf_counter() - retrieval_started) * 1000)
 
         decision = decide_grounding(sources, min_score=self._min_score)
         return {
             "session": session,
+            "retrieval_ms": retrieval_ms,
             "sources": sources,
             "decision": decision,
             "user_prompt": build_user_prompt(question, sources) if sources else "",
@@ -536,13 +759,20 @@ class KnowledgeCoordinator:
             raise NotFoundError(f"会话不存在：{session_id}")
         return session
 
-    @staticmethod
-    def _reason(decision: Any, *, used_remote: bool) -> str:
+    def _reason(
+        self, decision: Any, *, used_remote: bool, agent_ran: bool = False
+    ) -> str:
         """给人和日志看的一句话：为什么是这个回答方式。
 
-        三种情况要说得出区别，否则排障时分不清"没检索到"、"阈值太高"、
-        "用的是兜底而不是模型"—— 这三件事的修法完全不同。
+        四种情况要说得出区别，否则排障时分不清"没检索到"、"阈值太高"、
+        "用的是兜底而不是模型"、"走了 Agent 但没用工具" —— 它们的修法完全不同。
         """
+        if agent_ran and not used_remote:
+            # Agent 跑过、但一个工具都没调（于是退回本地兜底那句确定性话术）。
+            # ⚠️ 不特判这一种的话，这里会回 `decision.reason`（"检索结果为空"之类）——
+            # 那句话对制度问答是对的，对 Agent 却是**指错方向**：
+            # 真正发生的是"模型答不了这个问题、也没去查数据"。
+            return "已交给 Agent 处理，但它没有调用任何工具；本次用本地兜底回答"
         if not decision.use_model:
             return decision.reason
         if used_remote:
@@ -569,6 +799,9 @@ class KnowledgeCoordinator:
             chunk_no=chunk.chunk_no,
             content=chunk.content,
             score=max(0.0, min(1.0, 1.0 - distance)),
+            # 片段主键随来源一起带出去：**评测的锚点**（见 `Source.chunk_id`）。
+            # 界面上用不到它，但少带它评测就没法判"期望的那一片有没有被检索到"。
+            chunk_id=str(chunk.id),
         )
 
     @staticmethod
@@ -579,24 +812,305 @@ class KnowledgeCoordinator:
             "doc_title": source.doc_title,
             "doc_version": source.doc_version,
             "chunk_no": source.chunk_no,
+            "chunk_id": source.chunk_id,
             "content": source.content,
             "score": round(source.score, 4),
         }
 
-    async def _finish(self, prepared: dict[str, Any], *, answer: str) -> dict[str, Any]:
-        """回答的**公共后半段**：引用校验 → 追加提示 → 落库。
+    async def _answer_with_agent(
+        self,
+        prepared: dict[str, Any],
+        *,
+        question: str,
+        model_started: float,
+    ) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        """走 Agent：让模型自己决定调哪些工具，再把结果拼成回答。
 
-        校验结果**落库**（`chat_messages.citation_problems`）而不是只写日志：
-        计划里定的第一版策略是"不阻断，但把问题记下来"，
-        记在库里才能积累样本、决定将来是重试还是拒答。
+        ============================ 这里的三条纪律 ============================
+        ① **身份只有一个来源**：`Principal` 由调用方（边界层）传下来，
+           与 HTTP 请求里那个是同一份数据 —— 工具因此继承调用者的权限范围，
+           不存在"两处身份可能不一致"的空间；
+        ② **工具步骤实时推给前端**（`step` 事件）：用户想知道"它在干什么"，
+           而"转圈 20 秒然后一次性给答案"会让人以为卡住了；
+        ③ **引用校验照旧跑**：Agent 的回答可能引用制度片段（它没有检索结果，
+           但可能凭记忆说起制度），所以 `_finish` 的两层校验**一次都不能少**。
+        """
+        assert self._purchase is not None and self._approval is not None  # noqa: S101
+        actor = await self._principal_for(prepared)
+
+        pieces: list[str] = []
+        steps: list[dict[str, Any]] = []
+        usage: ModelUsage | None = None
+        stop_reason = "answered"
+        rounds = 0
+
+        async for item in run_agent(
+            question=question,
+            actor=actor,
+            chat_model=self._chat,
+            purchase=self._purchase,
+            approval=self._approval,
+        ):
+            if isinstance(item, AgentStep):
+                steps.append(
+                    {
+                        "round": item.round_no,
+                        "kind": item.kind,
+                        "detail": item.detail,
+                        "tool": item.call.name if item.call else None,
+                    }
+                )
+                # 实时推给前端。`tool_call` 与 `tool_result` 分开是两个有用的信号：
+                # "正在查"与"查到了"—— 后者才是用户等的那一下。
+                yield "step", steps[-1]
+                continue
+            # AgentResult
+            pieces.append(item.answer)
+            usage = item.usage
+            stop_reason = item.stop_reason
+            rounds = item.rounds
+
+        # ============================ 一个工具都没调 → 退回确定性话术（实测踩到）============================
+        # **模型没有查制度的工具**（4 个工具全是业务数据类），所以"制度里有没有这条规定"
+        # 它答不了 —— 而它不会说自己答不了，只会给一句半截的"系统里没有查到"。
+        # 那条路**绕过了本地兜底那句确定性话术**（"制度中没有找到相关规定"），
+        # 于是同一个问题在不同后端配置下给出**两套不同的回答**：
+        # 没配模型时是那句标准话术，配了模型（Agent 打开）时变成模型随口一句。
+        #
+        # 判据是"**真的调过工具吗**"：调了工具 = 这次回答的依据来自业务数据，用它；
+        # 一个都没调 = 它接不了这个问题 → 走原来那条确定性路径（含 `decide_grounding` 的判定），
+        # 与没有 Agent 时的行为**完全一致**。
+        #
+        # ⚠️ 这同时修掉一个**不一致**：`meta` 事件按"将会走 Agent"报 `used_model=True`，
+        # 而 `_finish` 按"模型是否真的被调用"算 —— 一个没调工具的回答会让两者说法相反，
+        # 页面于是不显示「未调用模型」徽标、回答却又是本地兜底的原话。
+        # 退回确定性路径之后，两条路都不再调用模型，`meta` 与落库结果一致。
+        if not agent_used_tools(steps):
+            # 判据与说明在 `_settle_agent_answer`（非流式那条路也走它）
+            fallback = str(prepared["decision"].fallback_answer)
+            yield "delta", {"text": fallback}
+            model_ms = int((time.perf_counter() - model_started) * 1000)
+            # ⚠️ `_finish` 里 `agent_used` 必须传"**真的调过工具**"而不是"走过 Agent 路径"：
+            # 走这条兜底分支时**没有任何模型输出被采用**，落库的 `used_model` 就该是 `False` ——
+            # 与 `prepared["decision"]`（本地兜底）的说法一致。
+            result = await self._finish(
+                prepared,
+                answer=fallback,
+                model_ms=model_ms,
+                usage=usage,
+                agent_steps=steps,
+                agent_stop_reason=stop_reason,
+            )
+            yield "done", self._done_payload(result, rounds=rounds, stop_reason=stop_reason)
+            return
+
+        answer = "".join(pieces)
+        yield "delta", {"text": answer}
+
+        model_ms = int((time.perf_counter() - model_started) * 1000)
+        result = await self._finish(
+            prepared,
+            answer=answer,
+            model_ms=model_ms,
+            usage=usage,
+            agent_steps=steps,
+            agent_stop_reason=stop_reason,
+        )
+        yield "done", self._done_payload(result, rounds=rounds, stop_reason=stop_reason)
+
+    @staticmethod
+    def _done_payload(
+        result: dict[str, Any], *, rounds: int, stop_reason: str
+    ) -> dict[str, Any]:
+        """Agent 两条出口（用到工具 / 没用工具）**共用的 `done` 事件体**。
+
+        抽出来是为了让两个出口的字段**不可能漂移** —— 它们是同一个协议事件，
+        少一个字段或改一个名字，前端就要有两套解析。
+        """
+        return {
+            "message_id": result["message_id"],
+            "citation_problems": result["citation_problems"],
+            "support_problems": result["support_problems"],
+            "support_rate": result["support_rate"],
+            "sources": result["sources"],
+            "prompt_tokens": result["prompt_tokens"],
+            "completion_tokens": result["completion_tokens"],
+            "estimated_cost_micros": result["estimated_cost_micros"],
+            #: **`used_model` 的权威值**（事实，不是预报）。
+            #: `meta` 里那个是发正文之前的预报，可能在 Agent 没调工具时偏乐观；
+            #: 这里的是 `_finish` 按"模型有没有真的被采用"算出来的，前端应以它为准。
+            "used_model": result["used_model"],
+            #: 为什么没调用模型 —— 同样以 `done` 为准（与 `used_model` 配对）
+            "reason": result["reason"],
+            # Agent 专属信息：轮次与停止原因。**要发出去** ——
+            # 它是"这次为什么停了"的唯一线索（超时？轮次用完？工具一直失败？），
+            # 而这些情况的用户体感都是"没答好"，不给原因就没法归因。
+            "agent_rounds": rounds,
+            "agent_stop_reason": stop_reason,
+        }
+
+    async def _collect_agent(
+        self, prepared: dict[str, Any], *, question: str
+    ) -> tuple[str, list[dict[str, Any]], ModelUsage | None, str]:
+        """非流式地把 Agent 跑完（`ask` 用它；`ask_stream` 那条路要逐步推给前端）。
+
+        返回 `(answer, steps, usage, stop_reason)`。
+        """
+        assert self._purchase is not None and self._approval is not None  # noqa: S101
+        actor = await self._principal_for(prepared)
+
+        pieces: list[str] = []
+        steps: list[dict[str, Any]] = []
+        usage: ModelUsage | None = None
+        stop_reason = "answered"
+
+        async for item in run_agent(
+            question=question,
+            actor=actor,
+            chat_model=self._chat,
+            purchase=self._purchase,
+            approval=self._approval,
+        ):
+            if isinstance(item, AgentStep):
+                steps.append(
+                    {
+                        "round": item.round_no,
+                        "kind": item.kind,
+                        "detail": item.detail,
+                        "tool": item.call.name if item.call else None,
+                    }
+                )
+                continue
+            pieces.append(item.answer)
+            usage = item.usage
+            stop_reason = item.stop_reason
+
+        answer, steps = self._settle_agent_answer(
+            prepared, answer="".join(pieces), steps=steps
+        )
+        return answer, steps, usage, stop_reason
+
+    @staticmethod
+    def _settle_agent_answer(
+        prepared: dict[str, Any], *, answer: str, steps: list[dict[str, Any]]
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """**一个工具都没调 → 退回确定性话术。**
+
+        流式与非流式**共用这一个判据**，理由见 `_answer_with_agent` 里那段说明：
+        模型没有查制度的工具，所以"制度里有没有这条规定"它答不了 —— 而它不会承认，
+        只会给一句半截的"系统里没有查到"。那条路会**绕过本地兜底那句确定性话术**，
+        于是同一个问题在"配了模型"和"没配模型"两种后端配置下给出**两套不同的回答**。
+
+        判据是"**真的调过工具吗**"：调了 → 这次回答的依据来自业务数据，用它；
+        一个都没调 → 它接不了这个问题 → 换成 `decide_grounding` 给出的那句标准话术。
+
+        返回 `(最终回答, 最终轨迹)` —— 轨迹原样带回（它是诊断信息，
+        "模型没调工具"这件事本身要能从落库的 `support_details` 里看出来）。
+        """
+        if agent_used_tools(steps):
+            return answer, steps
+        return str(prepared["decision"].fallback_answer), steps
+
+    async def _principal_for(self, prepared: dict[str, Any]) -> Principal:
+        """取回调用者身份（**工具的权限来源**）。
+
+        ============================ 为什么由调用方传入，而不是在这里查 ============================
+        边界层手里已经有 `CurrentUser`（就是那个已登录用户）。在这里再按
+        `session.user_id` 反查一次是**多余的数据库往返**，而且引入一个隐患：
+        反查结果与边界层手里那个如果因为任何原因不同，工具就会以**另一个身份**
+        执行 —— 而"权限来源必须唯一"是这一整块设计的根。
+
+        所以规则是：**谁发起提问，谁把身份交下来**；协调者不自己猜。
+        """
+        actor = prepared.get("actor")
+        if actor is None:
+            raise BusinessError(
+                "取不到当前用户身份，无法执行工具调用",
+                status_code=500,
+                code="AGENT_NO_PRINCIPAL",
+            )
+        return actor
+
+    async def _finish(
+        self,
+        prepared: dict[str, Any],
+        *,
+        answer: str,
+        model_ms: int = 0,
+        usage: ModelUsage | None = None,
+        agent_steps: list[dict[str, Any]] | None = None,
+        agent_stop_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """回答的**公共后半段**：两层引用校验 → 追加提示 → 落库。
+
+        ============================ 为什么是**两层**校验 ============================
+        | 层 | 函数 | 查什么 | 防的错 |
+        | --- | --- | --- | --- |
+        | ① 完整性 | `check_citation_integrity` | 引用的**编号**真不真 | 编造出处、通篇无引用 |
+        | ② 支撑性 | `check_citation_support` | 引用的**内容**撑不撑得住 | "编号真、内容假"（把 10 万说成 50 万） |
+
+        只做 ① 会放行后者 —— 而后者在 RAG 评测里对应 **Faithfulness（忠实度）**：
+        "回答里的事实能不能从被引用的上下文里得到支持"。
+        两层都做，才有资格谈"引用可信"。
+
+        校验结果**落库**（`chat_messages`）而不是只写日志：
+        计划里定的第一版策略是"**不阻断，但把问题记下来**"，
+        记在库里才能积累样本、决定将来是重试还是拒答；
+        ② 的 `support_rate` 还是**评测指标的数据来源**（见 `support_rate` 的口径说明）。
         """
         sources: list[Source] = prepared["sources"]
         problems = check_citation_integrity(answer, sources)
-        final = answer + (CITATION_WARNING if problems else "")
+        support_problems = check_citation_support(answer, sources)
+        rate = support_rate(answer, sources)
+
+        # ============================ Agent 型回答不该套"制度问答"的引用规则 ============================
+        # `check_citation_integrity` 的第二条是"有实质内容却没有任何引用编号"——
+        # 它对**制度问答**是对的（回答必须能指到原文）。
+        # 但 Agent 查的是**业务数据**（"你提过哪些申请"），那种回答**本来就没有制度引用**，
+        # 给它套这条规则会得到一个假问题，并在回答末尾贴上一句
+        # **误导性**的"请以制度原文为准"（实测：用户会以为系统在让他去翻制度）。
+        #
+        # 只保留**与来源相关**的那两条：引用了不存在的编号、检索到来源却完全不用。
+        #
+        # ⚠️ **判据必须是"真的调过工具"，不是"走了 Agent 路径"**（实测踩到，本行改过一次）：
+        # 一开始写的是 `bool(agent_steps)`，而 `agent_steps` 在**走 Agent 路径时必然非空**
+        # （至少有一条 `answer` 步）—— 于是这个条件**恒为真**。
+        # 后果：一个"**没调任何工具**、直接答了制度问题"的回答也被当成数据型回答，
+        # 跳过了"有断言必须带引用"这条检查。实测表现是模型回一句半截的
+        # "系统里没有查到"，却**没被标出"通篇断言却零引用"** —— 而那正是这条检查存在的意义。
+        #
+        # 所以只认 `tool_call` / `tool_result`：那才代表"这次回答的依据来自工具调用"。
+        # 判据抽成了纯函数（`agent_used_tools`），因为它**必须能离线单测** ——
+        # 这个恒真条件在集成测试里凑不出复现场景（需要"检索命中 + 模型一个工具都不调"）。
+        if agent_used_tools(agent_steps):
+            problems = [item for item in problems if "没有任何引用编号" not in item]
+
+        # 提示语只有一个来源（`CITATION_WARNING`）—— 两层问题合并后只追加一次，
+        # 避免回答末尾出现两行几乎一样的免责声明（那会让提示贬值成噪音）。
+        final = answer + (CITATION_WARNING if (problems or support_problems) else "")
         top_score = max((source.score for source in sources), default=None)
 
         session = prepared["session"]
         seq = await self._knowledge.next_seq(session.id)
+
+        # ---- 成本核算：用量与单价都齐了才算得出，缺一个就是"未知"（不是 0）----
+        # ⚠️ **Agent 也算"调用了模型"**：它走的是 `stream_turn`（不是 `stream`），
+        # 而 `decision.use_model` 对它是 False（检索没依据）。
+        # 不把 Agent 的事实传进来，一个花了几秒模型时间的 Agent 回答
+        # 在库里会记成"未调用模型" —— 审计字段说谎（实测踩到过）。
+        #
+        # ⚠️ 但判据是"**真的调过工具**"，不是"走了 Agent 路径"（同一类错漏的第三处）：
+        # Agent 一个工具都没调时会退回本地兜底那句写死的话术 —— 那时采用的字**不是模型生成的**，
+        # 记成"调用了模型"同样是说谎。`agent_used_tools` 是这条判据的唯一定义处。
+        used_remote = self._used_remote(
+            prepared["decision"], agent_used=agent_used_tools(agent_steps)
+        )
+        cost_micros = estimate_cost_micros(
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+            price=self._price_for_remote(used_remote),
+        )
+
         message = await self._knowledge.append_message(
             session_id=session.id,
             role="ASSISTANT",
@@ -604,8 +1118,19 @@ class KnowledgeCoordinator:
             seq=seq,
             sources=[self._source_payload(source) for source in sources],
             citation_problems=problems or None,
+            support_details=_merge_details(
+                [self._support_payload(problem) for problem in support_problems],
+                agent_steps=agent_steps,
+                agent_stop_reason=agent_stop_reason,
+            ),
+            support_rate=rate,
             top_score=top_score,
-            used_model=self._used_remote(prepared["decision"]),
+            retrieval_ms=prepared.get("retrieval_ms"),
+            model_ms=model_ms,
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+            estimated_cost_micros=cost_micros,
+            used_model=used_remote,
         )
         await self._uow.commit()
         return {
@@ -614,12 +1139,60 @@ class KnowledgeCoordinator:
             "answer": final,
             "sources": [self._source_payload(source) for source in sources],
             "citation_problems": problems,
-            "used_model": self._used_remote(prepared["decision"]),
+            "support_problems": [self._support_payload(p) for p in support_problems],
+            # `None` = 这次回答不适用该指标（没有引用句），与 `0.0`（全不可信）不同 ——
+            # 评测汇总时必须分开，否则均值会被"不适用"系统性压低。
+            "support_rate": rate,
+            # ---- 可观测：延迟与成本（`None` = 未知，不是 0）----
+            "retrieval_ms": prepared.get("retrieval_ms"),
+            "model_ms": model_ms,
+            "prompt_tokens": usage.prompt_tokens if usage else None,
+            "completion_tokens": usage.completion_tokens if usage else None,
+            "estimated_cost_micros": cost_micros,
+            "used_model": used_remote,
             "reason": self._reason(
                 prepared["decision"],
-                used_remote=self._used_remote(prepared["decision"]),
+                used_remote=used_remote,
+                # "走过 Agent 路径"这件事由轨迹本身表达（有轨迹 ⇒ Agent 跑过）——
+                # 用它区分"制度问答没依据"与"Agent 答不了又没查数据"，否则前者的话术会指错方向
+                agent_ran=bool(agent_steps),
             ),
             "top_score": top_score,
+            # ---- Agent 轨迹（只在走 Agent 时有值）----
+            # 非流式那条路也要把它们给出来：`stop_reason` 是"这次为什么停了"的
+            # 唯一线索（超时？轮次用完？工具一直失败？），
+            # 而这三种情况的用户体感都是"没答好"，不给原因就没法归因。
+            "agent_steps": agent_steps or None,
+            "agent_stop_reason": agent_stop_reason,
+        }
+
+    def _price_for_remote(self, used_remote: bool) -> ModelPrice | None:
+        """这次调用该用哪条单价。
+
+        ============================ 三种情况，必须分开 ============================
+        · **本地兜底**（没调模型）→ 不产生费用。这里返回 `None`，
+          但注意 `estimate_cost_micros` 也会因为**没有用量**而返回 `None` ——
+          两个 `None` 叠加仍是"未知"，语义上正确（"没调用"本来就没有成本可言）；
+        · **远端模型，价格表里有它** → 用它算；
+        · **远端模型，价格表里没有** → `None`（未知）。**不拿别的模型的价去套** ——
+          那会让成本报表看起来完整，实际上是编的。
+        """
+        if not used_remote:
+            return None
+        prices, problems = parse_model_prices(self._price_config)
+        if problems:
+            # 坏配置**不静默**：一条写错的价格会让该模型全部记成"成本未知"，
+            # 而"为什么未知"必须能从日志里看出来。
+            logger.warning("模型价格表有 %d 条无法解析：%s", len(problems), problems[:3])
+        return prices.get(self._chat.name)
+
+    @staticmethod
+    def _support_payload(problem: SupportProblem) -> dict[str, Any]:
+        """一条支撑性问题的对外形状（落库与响应共用，**不手拼两份**）。"""
+        return {
+            "kind": problem.kind,
+            "detail": problem.detail,
+            "sentence_index": problem.sentence_index,
         }
 
     async def _record_failure(self, prepared: dict[str, Any], *, reason: str) -> None:
@@ -647,25 +1220,33 @@ def build_knowledge_coordinator(
     *,
     object_store: ObjectStorePort,
     chat_model: ChatModelPort,
+    embedder: EmbeddingPort,
     top_k: int,
     min_score: float,
+    price_config: str = "",
+    purchase: PurchaseCoordinator | None = None,
+    approval: ApprovalCoordinator | None = None,
 ) -> KnowledgeCoordinator:
     """按一次请求的会话装配知识库用例的依赖。
 
     与其它 `build_*_coordinator` 同一个理由：装配只写一份，边界层与测试共用。
 
-    `chat_model` 是**参数**而不是在这里 new 出来的：测试要注入一个
-    "故意引用不存在编号"的假模型来验证引用校验（那是一条验收项），
-    而把选模型的逻辑写死在装配里，那条验收就只能靠真模型碰运气。
+    `chat_model` 与 `embedder` 都是**参数**而不是在这里 new 出来的：
+    测试要注入"故意引用不存在编号的假模型"与"故意给错维度的假 embedder"
+    来验证两条校验，而把选实现的逻辑写死在装配里，那两条验证就只能靠真模型碰运气。
     选哪一个实现由**边界层**决定（见 `boundaries/http/knowledge.py`）。
     """
     return KnowledgeCoordinator(
         knowledge=KnowledgeRepository(session),
         object_store=object_store,
         chat_model=chat_model,
+        embedder=embedder,
         uow=session,
         top_k=top_k,
         min_score=min_score,
+        price_config=price_config,
+        purchase=purchase,
+        approval=approval,
     )
 
 

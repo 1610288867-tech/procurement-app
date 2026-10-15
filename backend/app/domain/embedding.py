@@ -23,7 +23,7 @@
     1. 切词：英文按非字母数字切、中文按**字**切（不做分词，不引词典）；
     2. 每个词用稳定哈希（`blake2b`，**不用 Python 内置 `hash()`** ——
        它每个进程的盐不同，重启后同一个词会落到不同位置，检索会莫名其妙失效）；
-    3. 落到 `[0, 256)` 的某一维，按哈希的另一个 bit 决定 **+1 / -1**；
+    3. 落到 `[0, VECTOR_DIM)` 的某一维，按哈希的另一个 bit 决定 **+1 / -1**；
     4. 最后做 L2 归一化。
 
 带符号这一步不能省：全部取 +1 的话，任何两段文本的向量都在同一个卦限里，
@@ -37,11 +37,55 @@ import hashlib
 import math
 import re
 
-#: 向量维度。**与 `knowledge_chunks.embedding vector(256)` 必须一致**（见文件头）。
-VECTOR_DIM = 256
+#: 向量维度。**与 `knowledge_chunks.embedding vector(N)` 必须一致**（见文件头）。
+#:
+#: ============================ 为什么从 256 改成了 512 ============================
+#: 256 是给哈希实现定的（哈希投射的维度只影响碰撞率，256 够用）。
+#: 接入真 embedding 模型之后，维度由**模型**决定，不再由我们挑：
+#:     `quentinz/bge-small-zh-v1.5` → 512
+#: 所以这里的值改成 512，`vector(256)` 也跟着迁移成 `vector(512)`。
+#: **哈希实现也升到 512**：两边同维才能共用同一列、也才能在评测里直接对比，
+#: 而哈希的维度提升只会减少碰撞（没有坏处）。
+VECTOR_DIM = 512
 
-#: 本地模型的标识，写进 `knowledge_docs.embedding_model`。
+#: 本地哈希模型的标识，写进 `knowledge_docs.embedding_model`。
+#: 名字里带维度是**刻意的**：维度变了就是换了一个向量空间，
+#: 旧向量不能再用（按名字过滤会把它们排除掉，见 `EmbeddingPort.name` 的说明）。
 LOCAL_MODEL_NAME = f"local-hash-{VECTOR_DIM}"
+
+#: ============================ 模型 → 维度注册表 ============================
+#: 为什么要有一张表而不是"运行时问模型"：
+#: 数据库列 `vector(N)` 的 N 是**建表时定死的**，一旦模型给的维度与列不符，
+#: 插入会在**数据库层**报错（或更糟：被静默截断）。
+#: 在应用层先查这张表，就能给出"这个模型要 N 维，而列是 M 维"这种能直接定位的报错。
+#:
+#: 加一个新模型时**必须来这里加一行** —— 没登记的模型会被 `resolve_dim` 拒掉，
+#: 而不是让它去撞数据库。
+MODEL_DIMENSIONS: dict[str, int] = {
+    # 本地哈希（离线回退，见文件头）
+    "local-hash-256": 256,
+    "local-hash-512": 512,
+    # 真模型（Ollama）
+    "quentinz/bge-small-zh-v1.5": 512,
+    "bge-m3": 1024,
+    "nomic-embed-text": 768,
+}
+
+
+def resolve_dim(model_name: str) -> int:
+    """查这个模型多少维。**没登记就抛错**，不让它去撞数据库。
+
+    报错信息里要带上"已登记的有哪些"，否则加新模型的人得去翻源码才知道怎么修。
+    """
+    dim = MODEL_DIMENSIONS.get(model_name)
+    if dim is None:
+        known = "、".join(sorted(MODEL_DIMENSIONS))
+        raise ValueError(
+            f"未登记的 embedding 模型：{model_name!r}。"
+            f"请在 domain/embedding.py 的 MODEL_DIMENSIONS 里登记它的维度。"
+            f"已登记：{known}"
+        )
+    return dim
 
 #: 英文/数字词；中文按单字走 `_CJK`。
 _WORD = re.compile(r"[a-z0-9]+")

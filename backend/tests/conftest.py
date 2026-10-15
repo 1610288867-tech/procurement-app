@@ -34,6 +34,7 @@ from app.infrastructure.records.purchase import (
     RequestEventRecord,
 )
 from app.infrastructure.security import hash_password
+from app.infrastructure.token_quota import token_quota
 from app.main import app
 
 # 测试账号统一用这个口令。它是测试数据，不是任何真实环境的凭证。
@@ -202,3 +203,89 @@ async def client() -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         yield http
+
+
+@pytest.fixture(autouse=True)
+def _reset_token_quota() -> None:
+    """每个用例前重置问答的 token 配额，并把 embedding 强制成**离线实现**。
+
+    ============================ 为什么必须有这个夹具 ============================
+    配额是**应用级单例**（进程内一份），所以它会**跨用例累积**。
+    实测踩到：`test_follow_up_question_reuses_the_session` 连问两次，
+    第二次撞上 1 秒最小间隔，直接 429 失败 —— 而那条用例跟限流毫无关系。
+
+    ============================ 为什么测试要用 `local` embedding ============================
+    默认配置是 `ollama`（真模型、效果更好），但**测试不该依赖外部服务在跑**：
+    那样的测试会在没装 Ollama 的机器上、以及 CI 里全红，
+    而且每次上传文档都要等一次 HTTP 往返（实测：不设它时集成测试直接 500，
+    报的是"配置矛盾：选了 ollama 但没配地址"）。
+
+    这一层要验的是**装配与流程**（切分、入库、检索、引用校验、落库），
+    不是"这个 embedding 模型好不好"—— 后者由 `scripts\knowledge_eval.py`
+    用真模型在专门的评测里量（见 `docs/AI-评测baseline.md`）。
+
+    所以这里强制成 `local`：离线、毫秒级，结论只关于代码、不关于环境。
+    """
+    from app.config import get_settings
+
+    token_quota.reset()
+    token_quota.configure(
+        max_tokens_per_window=200_000, window_seconds=86_400.0, min_interval_seconds=0.0
+    )
+    # `get_settings` 带缓存，所以这里是"改那个缓存对象"，对后续请求立即生效；
+    # 用完恢复，免得影响别的测试文件（它们可能断言默认值）。
+    settings = get_settings()
+    original_provider = settings.knowledge_embedding_provider
+    settings.knowledge_embedding_provider = "local"
+    yield
+    settings.knowledge_embedding_provider = original_provider
+    # 用完再重置一次：留下状态会让"下一条用例为什么失败"变得难以解释
+    token_quota.reset()
+    token_quota.configure(min_interval_seconds=0.0)
+
+
+#: 非本测试套件造的、但会污染**检索类**用例的制度文档前缀。#:
+#: 为什么需要这份清单：`test_api_knowledge.py` 里有几条用例断言
+#: "**空库时不该有来源**"、"兜底回答不该有支撑性问题" ——
+#: 它们的成立前提是"库里只有本用例上传的那份制度"。
+#: 而下面这些前缀的文档是**别的工具造的**：
+#:
+#:     M11PAGE-   scripts\m11-知识库实测.mjs（页面实测）
+#:     EVAL-      backend\scripts\knowledge_eval.py（评测集）
+#:     PROBE      scripts\regression_probes.py
+#:
+#: `testdata_cleanup.py` 平时会清它们，但**执行顺序不保证**：
+#: 实测踩到 —— 页面实测（回归第 9 步）造的 `M11PAGE-*` 文档，
+#: 被第 12 步的清理删掉之前，第 2 步的 pytest 已经跑过了；
+#: 而手动重跑 pytest 时它还在，于是两条用例失败。
+#: **检索类测试必须自己保证起点干净，不能依赖别处恰好清过。**
+POLLUTING_DOC_PREFIXES = ("M11PAGE-%", "M11TEST-%", "EVAL-%", "PROBE%")
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _clean_polluting_knowledge_docs() -> AsyncIterator[None]:
+    """整个测试会话开始前，清掉别的工具留下的、会污染检索的制度文档。
+
+    **只动上面那份前缀清单里的东西** —— 不碰任何手工上传的制度文档，
+    也不碰任何业务数据。所以它是安全的：清掉的都是"可再生"的测试数据
+    （页面实测与评测脚本每次运行都会重新造）。
+    """
+    from app.infrastructure.records.knowledge import (
+        KnowledgeChunkRecord,
+        KnowledgeDocRecord,
+    )
+
+    async with SessionFactory() as session:
+        from sqlalchemy import or_
+
+        conditions = [
+            KnowledgeDocRecord.source_key.like(prefix)
+            for prefix in POLLUTING_DOC_PREFIXES
+        ]
+        doc_ids = select(KnowledgeDocRecord.id).where(or_(*conditions))
+        await session.execute(
+            delete(KnowledgeChunkRecord).where(KnowledgeChunkRecord.doc_id.in_(doc_ids))
+        )
+        await session.execute(delete(KnowledgeDocRecord).where(or_(*conditions)))
+        await session.commit()
+    yield

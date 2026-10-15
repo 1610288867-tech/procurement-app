@@ -126,6 +126,27 @@ class PurchaseRepository:
             statement = statement.execution_options(populate_existing=True)
         return (await self.session.scalars(statement)).one_or_none()
 
+    async def get_request_by_code(
+        self, code: str, *, scope: RequestScope, actor_id: uuid.UUID
+    ) -> PurchaseRequestRecord | None:
+        """按**单据编号**取（`REQ-2026-0001` 这种），同样限定可见范围。
+
+        ============================ 为什么需要它（Agent 工具专用）============================
+        对话里用户说的是单号而不是 UUID。之前只有 `get_request(id)`，
+        而编号→UUID 的查询只在 `list_requests` 的返回里存在 ——
+        工具没法"用编号直接查一张单"。
+
+        **可见范围一样必须进 `WHERE`**：这是能按"人类可读的编号"直接取数的入口，
+        没有范围过滤的话它就是一个"猜编号就能看别人单子"的越权口子。
+
+        编号与申请是**一对一**（`UNIQUE(code)`），所以这里用 `one_or_none`。
+        """
+        statement = select(PurchaseRequestRecord).where(
+            PurchaseRequestRecord.code == code,
+            *_scope_conditions(scope, actor_id=actor_id),
+        )
+        return (await self.session.scalars(statement)).one_or_none()
+
     async def list_requests(
         self,
         *,

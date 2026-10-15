@@ -63,7 +63,14 @@ CITATION_WARNING = "\n\n（本条回答的来源校验未通过，请以制度�
 
 @dataclass(frozen=True)
 class Source:
-    """一条检索到的制度片段（编号从 **1** 开始，与 Prompt 里的 `[n]` 对应）。"""
+    """一条检索到的制度片段（编号从 **1** 开始，与 Prompt 里的 `[n]` 对应）。
+
+    `chunk_id` 是**片段的稳定标识**（数据库主键）。它不进 Prompt（Prompt 里用编号），
+    但它是**评测的锚点**：检索层指标（Recall@K / MRR / NDCG）判的是
+    "期望命中的那一片有没有被检索到"，而那一判据必须落在
+    **与切分无关的标识**上 —— 用 `chunk_no` 判的话，
+    改一次切分参数（片数变了）整份评测集就失效了。
+    """
 
     number: int
     doc_id: str
@@ -72,6 +79,9 @@ class Source:
     chunk_no: int
     content: str
     score: float
+    #: 片段主键（评测与排障用）。**默认空串**是为了不让老调用点全炸 ——
+    #: 生产路径一定会填（协调者从记录里带出来）。
+    chunk_id: str = ""
 
 
 @dataclass(frozen=True)

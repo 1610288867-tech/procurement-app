@@ -1,0 +1,620 @@
+{
+  "summary": {
+    "cases_total": 27,
+    "cases_ok": 27,
+    "cases_failed": 0,
+    "retrieval": {
+      "k": 5,
+      "cases_total": 22,
+      "cases_scored": 22,
+      "recall_skipped": 0,
+      "recall": 1.0,
+      "precision": 0.5,
+      "hit_rate": 1.0,
+      "mrr": 1.0,
+      "mrr_cases": 22,
+      "ndcg": 1.0
+    },
+    "generation": {
+      "support_rate_mean": 1.0,
+      "support_rate_scored": 24,
+      "support_problem_counts": {
+        "CITATION_NUMBER_UNSUPPORTED": 0,
+        "CITATION_NEGATION_FLIPPED": 0,
+        "CITATION_MISPLACED": 0
+      },
+      "citation_integrity_failures": 0,
+      "refusal_on_unanswerable": "3/5",
+      "over_refusal_on_answerable": 0,
+      "grounded_rate": 1.0,
+      "grounded_scored": 22
+    },
+    "embedding_model": "quentinz/bge-small-zh-v1.5"
+  },
+  "results": [
+    {
+      "id": "F-01",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "采购金额超过十万元的，应当采用什么方式？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.746558963432086,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "F-02",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "采购金额低于五万元的可以采用什么采购方式？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.7729372166170712,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "F-03",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "采购金额在五万元至十万元之间的，可以采用哪些方式？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.7736121202512273,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "F-04",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "采购验收由哪些部门共同完成？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6748613349556162,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "F-05",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "验收不合格的应当在几个工作日内通知供应商退换？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6268295868141607,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "F-06",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "财务部门付款前应当核对哪三份单据？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.609318795597204,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "F-07",
+      "category": "fact",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "付款应当在什么之后进行？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.5431693247758884,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "F-08",
+      "category": "fact",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "差旅费管理办法规定普通员工出差住宿费每晚上限是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.8404738747649995,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ]
+    },
+    {
+      "id": "C-01",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "什么情况下采购申请不能提交？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6894220935609893,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "C-02",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "所有采购活动对预算有什么要求？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6513739922710711,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "C-03",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "三者金额一致才可以付款，指的是哪三者？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.5637467655531961,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "C-04",
+      "category": "condition",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "如果采购金额刚好是十万元，应该走公开招标吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.7229809316047702,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "C-05",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "出差补助按什么计算？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.7092847671682525,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ]
+    },
+    {
+      "id": "C-06",
+      "category": "condition",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "市内交通费怎么报销？上限是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "2 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.7162633155663067,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ]
+    },
+    {
+      "id": "V-01",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "员工出差住宿费的上限标准是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.8156883496867164,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ]
+    },
+    {
+      "id": "V-02",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "市内交通费的每日上限是多少？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6902317035474865,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ]
+    },
+    {
+      "id": "V-03",
+      "category": "cross_version",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "出差补助每人每天多少钱？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.7482716591196383,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ]
+    },
+    {
+      "id": "L-01",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "多少钱要招标啊？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6299943923950911,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "L-02",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "没预算能先报吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.5294693147503852,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "L-03",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "东西收得不合格怎么办？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.5659662552365368,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "L-04",
+      "category": "colloquial",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "报销住宿费有什么标准吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6785723960825234,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ]
+    },
+    {
+      "id": "L-05",
+      "category": "colloquial",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "想买东西但是账上没钱，能不能先买了再说？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.5228108790887784,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ]
+    },
+    {
+      "id": "U-01",
+      "category": "unanswerable",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "年假有多少天？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 2 条但全部低于相似度阈值 0.5（最高 0.434），未调用模型",
+      "top_score": 0.4338969667080712,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": []
+    },
+    {
+      "id": "U-02",
+      "category": "unanswerable",
+      "difficulty": "easy",
+      "ok": true,
+      "question": "公司的报销发票需要贴在哪里？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。\n\n[2]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.5119938821807188,
+      "retrieved": [
+        "f57bb096-5feb-4c3e-98eb-05af85444098",
+        "c1b30619-73de-4339-bc3c-81df0892da0c"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": []
+    },
+    {
+      "id": "U-03",
+      "category": "unanswerable",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "员工持股计划怎么参与？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 2 条但全部低于相似度阈值 0.5（最高 0.430），未调用模型",
+      "top_score": 0.43044606758537607,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": []
+    },
+    {
+      "id": "U-04",
+      "category": "unanswerable",
+      "difficulty": "medium",
+      "ok": true,
+      "question": "公司的年会在什么时候举办？",
+      "answer": "制度中没有找到相关规定。",
+      "used_model": false,
+      "reason": "检索到 2 条但全部低于相似度阈值 0.5（最高 0.356），未调用模型",
+      "top_score": 0.356152227887675,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": null,
+      "is_refusal": true,
+      "relevant": []
+    },
+    {
+      "id": "U-05",
+      "category": "unanswerable",
+      "difficulty": "hard",
+      "ok": true,
+      "question": "采购金额超过一亿元的，需要经过董事会审批吗？",
+      "answer": "根据检索到的制度原文（未调用模型，以下为原文摘录）：\n\n[1]《采购管理办法》（第 1 版）\n第一条 为规范公司采购行为，加强采购管理，特制定本办法。\n\n[2]《差旅费管理办法》（第 2 版）\n第一条 员工出差住宿费按职级报销。",
+      "used_model": false,
+      "reason": "1 条片段达到阈值 0.5，调用模型；本次用**本地兜底**整理原文，未调用远端模型",
+      "top_score": 0.6532968258792736,
+      "retrieved": [
+        "c1b30619-73de-4339-bc3c-81df0892da0c",
+        "f57bb096-5feb-4c3e-98eb-05af85444098"
+      ],
+      "citation_problems": [],
+      "support_problems": [],
+      "support_rate": 1.0,
+      "is_refusal": false,
+      "relevant": []
+    }
+  ]
+}

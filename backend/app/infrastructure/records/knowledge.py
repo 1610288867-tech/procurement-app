@@ -42,6 +42,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -222,10 +223,44 @@ class ChatMessageRecord(Base):
     #: 溯源校验发现的问题（空 = 通过）。**落库而不是只写日志**：
     #: 计划里定的第一版策略是"不阻断，但把问题记下来"，
     #: 记在库里才能积累样本、决定将来是重试还是拒答。
+    #:
+    #: ⚠️ 它只装**第一层**（引用编号完整性）的问题。第二层（内容支撑性）
+    #: 落在下面的 `support_details` —— **两层分开存**是因为它们的处置不同：
+    #: 编号造假是"模型违规"，内容不支撑更可能是"来源本身不够清楚"，
+    #: 混在一个数组里就再也统计不出各自的比例。
     citation_problems: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    #: 第二层校验的问题明细：`[{"kind": ..., "detail": ..., "sentence_index": ...}]`。
+    #: 存结构而不是字符串，是为了按 `kind` 统计"哪一类问题最多"
+    #: （文案会改，类别不会）。
+    support_details: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    #: **Faithfulness 的规则法近似**（有引用的句子中未被发现问题的比例）。
+    #: ⚠️ `NULL` 与 `0.0` 必须区别对待：前者是"这次回答不适用该指标"
+    #: （没有引用句），后者是"有引用的句子全都不可信" ——
+    #: 汇总评测均值时把"不适用"当成 0 分会**系统性压低**指标。
+    support_rate: Mapped[float | None] = mapped_column(nullable=True)
     #: 检索最高分与"是否调用了模型" —— 验收项"检索为空时日志里能看到未调用模型"
     #: 在界面与库里的落点。
     top_score: Mapped[float | None] = mapped_column(nullable=True)
+    #: ============================ 延迟与成本（可观测）============================
+    #: 两段延迟**分开记**，因为它们要回答不同的问题：
+    #:   `retrieval_ms` 大 → 查索引/向量检索的问题（加索引、改 top-k）
+    #:   `model_ms`     大 → 模型或网络的问题（换模型、减上下文、加超时）
+    #: 合起来只记一个"总耗时"就分不清该改哪边 —— 与"检索评测与生成评测必须解耦"同一条理由。
+    retrieval_ms: Mapped[int | None] = mapped_column(nullable=True)
+    model_ms: Mapped[int | None] = mapped_column(nullable=True)
+    #: token 用量。**可能为空**：流式接口默认不返回 usage，
+    #: 拿不到时留 `NULL` 而不是估算（估算值混进真实用量会让账算不清）。
+    prompt_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    #: 估算成本，单位**微元**（1e-6 元）。
+    #: 为什么用 `BIGINT` 而不是 `Integer`：`Integer` 上限是 21 亿微元 = **2147 元** ——
+    #: 一个月的 token 费用很容易超过它，而 PostgreSQL 在溢出时会**直接报错**，
+    #: 于是"成本统计"会在某个不起眼的时刻开始写不进去。
+    #: 与"金额一律整数分 + BIGINT"是同一条纪律：钱相关的字段不要用会溢出的宽度。
+    #: 本地模型不产生费用，所以它是 `0` 而不是 `NULL`（"确实是 0 元"与"不知道多少钱"不同）。
+    estimated_cost_micros: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     used_model: Mapped[bool] = mapped_column(nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

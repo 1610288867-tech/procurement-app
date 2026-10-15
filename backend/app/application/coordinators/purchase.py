@@ -81,6 +81,9 @@ from app.infrastructure.repositories.purchase_repo import PurchaseRepository
 # 撤回请求会拿到提交请求的响应，而且看起来一切正常。
 SCOPE_SUBMIT = "POST:/api/v1/requests/{id}/submit"
 SCOPE_WITHDRAW = "POST:/api/v1/requests/{id}/withdraw"
+#: 确认 Agent 提案后真正建草稿。scope 按项目约定写成 `METHOD:/path`。
+#: 幂等键是**确认令牌**（由"谁 + 什么内容"算出，天然唯一）。
+SCOPE_CREATE_DRAFT = "POST:/api/v1/chat/confirm-draft"
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
@@ -249,6 +252,32 @@ class PurchaseCoordinator:
         timeline = await self._events.list_for_request(request_id)
         return record, items, timeline
 
+    async def get_request_detail_by_code(
+        self,
+        *,
+        code: str,
+        actor_id: uuid.UUID,
+        roles: Sequence[str],
+        department_id: uuid.UUID | None,
+    ) -> tuple[PurchaseRequestView, Sequence[PurchaseItemView], Sequence[RequestEventView]]:
+        """按**单据编号**取一张单子（给 Agent 工具用；人说的是单号而不是 UUID）。
+
+        与 `get_request_detail` 走**同一套可见范围**：范围外一律 404，
+        与 HTTP 接口的行为完全一致 —— 因为"能不能看"这件事只有一个出处
+        （`resolve_request_scope`），工具不新开一条判断路径。
+        """
+        scope = await self._scope_for(
+            actor_id=actor_id, roles=roles, department_id=department_id
+        )
+        record = await self._requests.get_request_by_code(
+            code, scope=scope, actor_id=actor_id
+        )
+        if record is None:
+            raise NotFoundError(f"采购申请不存在，或你没有权限查看：{code}")
+        items = await self._requests.list_items(record.id)
+        timeline = await self._events.list_for_request(record.id)
+        return record, items, timeline
+
     async def patch_draft(
         self,
         *,
@@ -365,6 +394,72 @@ class PurchaseCoordinator:
                                   department_id=department_id)
 
     # ------------------------------------------------------------------ 状态推进
+
+    async def create_draft_idempotent(
+        self,
+        *,
+        actor_id: uuid.UUID,
+        department_id: uuid.UUID | None,
+        category_id: uuid.UUID,
+        title: str,
+        reason: str | None,
+        idempotency_key: str,
+    ) -> tuple[str, str, bool]:
+        """带幂等的建草稿（给"确认 Agent 提案"那条路用）。
+
+        返回 `(request_id, code, replayed)` —— **刻意只返回这三个字符串/布尔**，
+        而不是记录对象。理由：幂等协调者在重放时给回来的是 `dump()` 存下的**字典**、
+        在首次执行时给的是**记录对象**，两种形状不同。
+        把记录对象原样透出去，调用方就会在"第一次"和"重放"两条路上拿到不同的东西 ——
+        而那种错**只在重放时出现**（平时测不到）。所以这里统一成"已经落到三样基本值"。
+
+        ============================ 为什么必须幂等 ============================
+        这是**人点按钮**触发的写操作：手抖点两下、网络重试、前端重复提交
+        都会让它跑两次。而"建了两张一模一样的草稿"不会报错，
+        只会让用户在某天发现列表里有两张一样的单 —— 那时已经没人记得为什么。
+
+        幂等键由调用方给（确认端点用**确认令牌**：它由"谁 + 什么内容"算出来，
+        天然唯一，重复确认必然同键）。
+
+        载荷哈希只含这次请求的内容：**同键但内容不同 = 409**（与其它写操作一致），
+        因为那说明"同一份提案被改过又提交了"，属于客户端行为异常，不能默默接受。
+        """
+
+        async def work() -> tuple[str, str]:
+            record = await self.create_draft(
+                actor_id=actor_id,
+                department_id=department_id,
+                category_id=category_id,
+                title=title,
+                reason=reason,
+                # 用 `parse_urgency` 而不是 `Urgency.NORMAL`：本模块一贯用它，
+                # 而它接受字符串 —— 这里给 `"NORMAL"`，行为与其它入口一致。
+                urgency="NORMAL",
+                form_data=None,
+            )
+            return str(record.id), record.code
+
+        result = await self._idempotency.run(
+            actor_id=actor_id,
+            scope=SCOPE_CREATE_DRAFT,
+            key=idempotency_key,
+            payload={
+                "title": title,
+                "category_id": str(category_id),
+                "reason": reason,
+            },
+            work=work,
+            # 存成 `[id, code]` 而不是字典：`dump` 的产物会进 JSONB，
+            # 而 JSON 对象在重放时回来的**键序与类型**都可能与写入时不同
+            # （这里其实只有一个字符串列表，规避了那个不确定性）。
+            dump=lambda value: {"id": value[0], "code": value[1]},
+        )
+        value = result.value
+        if isinstance(value, dict):  # 重放：拿回 dump 存下的字典
+            return str(value["id"]), str(value["code"]), bool(result.replayed)
+        # 首次执行：`value` 是 `work()` 返回的元组
+        request_id, code = value
+        return str(request_id), str(code), bool(result.replayed)
 
     async def submit(
         self,

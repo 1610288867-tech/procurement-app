@@ -324,7 +324,16 @@ class KnowledgeRepository:
         seq: int,
         sources: list[dict[str, Any]] | None = None,
         citation_problems: list[str] | None = None,
+        support_details: list[dict[str, Any]] | None = None,
+        support_rate: float | None = None,
         top_score: float | None = None,
+        # ---- 可观测：延迟与成本。**全部可空** —— 拿不到就是 `None`（未知），
+        # 不是 0。理由见 `records/knowledge.py` 与 `domain/cost.py` 的口径说明。
+        retrieval_ms: int | None = None,
+        model_ms: int | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        estimated_cost_micros: int | None = None,
         used_model: bool = False,
     ) -> ChatMessageRecord:
         if role not in (ROLE_USER, ROLE_ASSISTANT):
@@ -336,7 +345,14 @@ class KnowledgeRepository:
             seq=seq,
             sources=sources,
             citation_problems=citation_problems,
+            support_details=support_details,
+            support_rate=support_rate,
             top_score=top_score,
+            retrieval_ms=retrieval_ms,
+            model_ms=model_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            estimated_cost_micros=estimated_cost_micros,
             used_model=used_model,
         )
         self.session.add(record)

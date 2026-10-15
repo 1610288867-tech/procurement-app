@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 
@@ -36,7 +37,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, or_, select
 
+from app.application.coordinators.auth import Principal
+from app.config import get_settings
 from app.database import SessionFactory
+from app.domain.embedding import VECTOR_DIM
 from app.domain.grounded_answer import NO_GROUNDING_ANSWER, check_citation_integrity
 from app.domain.permissions import ROLE_ADMIN, ROLE_REQUESTER
 from app.infrastructure.records.auth import UserRecord
@@ -47,7 +51,11 @@ from app.infrastructure.records.knowledge import (
     KnowledgeChunkRecord,
     KnowledgeDocRecord,
 )
-from app.infrastructure.records.purchase import IdempotencyRecord
+from app.infrastructure.records.purchase import (
+    IdempotencyRecord,
+    PurchaseRequestRecord,
+    RequestEventRecord,
+)
 from app.main import app
 from tests.conftest import Account, UserFactory, login_as
 
@@ -162,7 +170,29 @@ async def world(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[World]:
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
-    from app.config import get_settings
+    # embedding 也要用**环境变量**固定成离线实现，原因有两层：
+    #   ① 默认配置是 `ollama`（真模型），而测试不该依赖外部服务在跑；
+    #   ② 下面这行 `cache_clear()` 会把 Settings **重新构造**一遍 ——
+    #      所以"改上一个 Settings 对象"的做法在这里是无效的（实测踩到：
+    #      夹具改了对象，缓存一清就没了，测试仍然报 500"配置矛盾"）。
+    #      `Settings` 本来就是从环境读的，环境变量才是与它配套的注入方式。
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_PROVIDER", "local")
+
+    # ============================ 对话模型也必须固定成"没有远端" ============================
+    # **实测踩到（2026-10-14）**：`backend/.env` 建好之后，这整套测试开始
+    # 真的去调本机 Ollama（日志里出现 `POST http://127.0.0.1:11434/v1/chat/completions`），
+    # 于是回答变成真模型生成的，与"本地兜底会给出什么"的断言不符 —— 5 条一起红。
+    #
+    # 根因是**测试依赖了本机配置**。测试要断言的是**代码逻辑**
+    # （检索 → 阈值判定 → 引用校验 → 落库），不是"这台机器上跑着什么模型"。
+    # 所以这里把三项**显式置空**：`_chat_model()` 的判据是"三项都非空才用远端"，
+    # 空串即可稳定退回 `LocalExtractiveChat`（离线、确定性）。
+    #
+    # ⚠️ 注意 `Settings` 里**环境变量与 `.env` 优先级相同**（谁后加载谁赢，
+    # 而 `.env` 在后），所以**不能靠"不设变量"来规避** —— 必须显式置空。
+    monkeypatch.setenv("KNOWLEDGE_LLM_BASE_URL", "")
+    monkeypatch.setenv("KNOWLEDGE_LLM_API_KEY", "")
+    monkeypatch.setenv("KNOWLEDGE_LLM_MODEL", "")
 
     get_settings.cache_clear()
 
@@ -174,6 +204,8 @@ async def world(
 
     account = await user_factory(roles=[ROLE_REQUESTER], department_id=None)
     state.actors.append(account.id)
+    # 记下提问者 id：配额是**按用户**记的，验证记账要用它
+    state.asker_user_id = account.id
     state.asker = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
     await login_as(state.asker, account)
 
@@ -210,6 +242,207 @@ async def upload(
     return response
 
 
+# ================================================================ 0. Agent（工具调用）路径
+
+#: 一个"会用工具"的假模型：永远调同一个工具，然后照结果回答。
+#:
+#: 为什么不打真模型：Agent 路径要验的是**装配与权限**（身份有没有传下去、
+#: 引用规则有没有被误用、审计字段有没有说谎），不是"这个模型聪明不聪明"。
+#: 真模型的能力由 `docs/AI-评测baseline.md` 那套评测负责。
+class ToolCallingChat:
+    supports_tools = True
+    name = "fake-tool-calling"
+
+    def __init__(self, tool_name: str = "list_my_purchase_requests") -> None:
+        self._tool_name = tool_name
+        self.calls = 0
+
+    async def stream_turn(self, *, messages, tools, on_usage=None):  # type: ignore[no-untyped-def]
+        from app.application.ports import ToolCall, TurnResult
+
+        self.calls += 1
+        if self.calls == 1:
+            yield TurnResult(
+                text="",
+                tool_calls=(
+                    ToolCall(id="c1", name=self._tool_name, arguments='{"limit": 3}'),
+                ),
+            )
+        else:
+            yield TurnResult(text="我查到了一些采购申请。")
+
+    async def stream(self, **kwargs):  # type: ignore[no-untyped-def]
+        yield "不该走到这里"
+
+
+async def test_confirm_draft_creates_once_and_replays_on_second_click(
+    world: World, user_factory: UserFactory
+) -> None:
+    """**验收（M12）：Agent 准备的草稿，人确认后才真正创建；重复确认只建一张。**
+
+    ============================ 这条用例守的是什么 ============================
+    ① **写工具不自己落库**：确认之前库里什么都没有；
+    ② **令牌与内容逐字绑定**：改一个字就被拒 ——
+       令牌是 `uuid5(actor+标题+品类+备注)`、**可以被推算**，
+       所以只验令牌等于"知道内容就能建单"；
+    ③ **幂等**：点两次确认只建一张草稿，第二次返回 `replayed=true`。
+       这是"人点按钮"类写操作的必备属性：手抖点两下、网络重试都会跑到这里，
+       而"建了两张一样的草稿"不会报错，只会让用户某天发现列表里有重复单。
+    """
+    from app.application.tools import _confirmation_token
+
+    await upload(world)
+
+    # 造一个部门 + 一个**有部门**的申请人。
+    # 为什么必须有部门：`create_draft` 会拒"没有部门的账号"（`NO_DEPARTMENT`），
+    # 而那是刻意的业务规则 —— 采购申请必须归属某个部门，所以这条用例
+    # 也得按真实前提来造数据，而不是把规则绕开。
+    department = (
+        await world.admin_client.post(
+            "/api/v1/admin/departments",
+            json={"name": "Agent 确认用例部门", "code": f"TAGT-{uuid.uuid4().hex[:6]}"},
+        )
+    ).json()
+    world.departments.append(uuid.UUID(department["id"]))
+    account = await user_factory(
+        roles=[ROLE_REQUESTER], department_id=uuid.UUID(department["id"])
+    )
+    world.actors.append(account.id)
+    requester = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    await login_as(requester, account)
+
+    # 取一个真实品类（创建草稿也必须给它）
+    categories = (await world.admin_client.get("/api/v1/admin/categories")).json()
+    assert categories, "测试数据里应当至少有一个品类"
+    category_id = str(categories[0]["id"])
+
+    actor = Principal(
+        id=account.id,
+        username=account.username,
+        full_name="有部门的申请人",
+        department_id=uuid.UUID(department["id"]),
+        roles=(ROLE_REQUESTER,),
+    )
+    title = f"打印纸采购（Agent 建议）-{uuid.uuid4().hex[:6]}"
+    draft = {"title": title, "category_id": category_id, "reason": None}
+    token = _confirmation_token(actor=actor, draft=draft)
+
+    try:
+        # ② 内容被改 → 拒绝（404：不告诉调用方"这份提案存在"，与可见范围外一律 404 同一条纪律）
+        changed = await requester.post(
+            "/api/v1/chat/confirm-draft",
+            json={"confirmation_token": token, "draft": {**draft, "title": "改过的标题"}},
+        )
+        assert changed.status_code == 404, f"内容与令牌不符应当拒绝：{changed.text}"
+
+        # ① + ③ 原样确认 → 建成功
+        first = await requester.post(
+            "/api/v1/chat/confirm-draft", json={"confirmation_token": token, "draft": draft}
+        )
+        assert first.status_code == 200, first.text
+        created = first.json()
+        assert created["status"] == "DRAFT"
+        assert created["replayed"] is False
+        assert created["code"].startswith("PR-")
+
+        # 再点一次 → 重放，而不是又建一张
+        second = await requester.post(
+            "/api/v1/chat/confirm-draft", json={"confirmation_token": token, "draft": draft}
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["replayed"] is True, "重复确认必须重放"
+        assert second.json()["request_id"] == created["request_id"], "重放要返回同一张单"
+
+        # 库里确实只有一张
+        async with SessionFactory() as session:
+            rows = (
+                await session.scalars(
+                    select(PurchaseRequestRecord).where(
+                        PurchaseRequestRecord.title == title
+                    )
+                )
+            ).all()
+            assert len(rows) == 1, f"只该有一张，实际 {len(rows)} 张"
+            # 用例自己造的数据自己收。幂等占位行也要收 ——
+            # 留着它会让下次同键请求命中一条指向已删记录的记录。
+            request_ids = [row.id for row in rows]
+            await session.execute(
+                delete(RequestEventRecord).where(
+                    RequestEventRecord.request_id.in_(request_ids)
+                )
+            )
+            await session.execute(
+                delete(PurchaseRequestRecord).where(
+                    PurchaseRequestRecord.id.in_(request_ids)
+                )
+            )
+            await session.execute(
+                delete(IdempotencyRecord).where(IdempotencyRecord.key == token)
+            )
+            await session.commit()
+    finally:
+        await requester.aclose()
+
+
+async def test_agent_path_uses_caller_identity_and_records_usage() -> None:
+    """**验收（M12）：数据型问题走 Agent，且身份、审计、引用规则三件事都对。**
+
+    ============================ 这条用例守的是三个实测踩到的坑 ============================
+    ① **分流只加在流式那条路** → 非流式照旧回"制度中没有找到相关规定"，
+       而 curl 与集成测试打的偏偏是非流式 —— 功能写了却没效果；
+    ② **`used_model` 说谎**：Agent 的 `decision.use_model` 是 False（检索没依据），
+       而它**确实调了模型**，于是库里把一个花了几秒模型时间的回答记成"未调用模型"；
+    ③ **给数据型回答套制度问答的引用规则** → 回答末尾被贴上
+       "请以制度原文为准"，而它查的是业务数据、本来就没有制度引用。
+    """
+    from app.boundaries.http.approvals import approval_coordinator
+    from app.boundaries.http.knowledge import build_knowledge_coordinator
+    from app.boundaries.http.requests import purchase_coordinator
+    from app.infrastructure.embeddings import LocalHashEmbedding
+    from app.infrastructure.object_store import LocalObjectStore
+
+    fake = ToolCallingChat()
+    async with SessionFactory() as session:
+        coordinator = build_knowledge_coordinator(
+            session,
+            object_store=LocalObjectStore("uploads"),
+            chat_model=fake,
+            embedder=LocalHashEmbedding(),
+            top_k=5,
+            min_score=0.15,
+            purchase=purchase_coordinator(session),
+            approval=approval_coordinator(session),
+        )
+        actor = (await session.scalars(select(UserRecord).limit(1))).one()
+        principal = Principal(
+            id=actor.id,
+            username=actor.username,
+            full_name=actor.full_name,
+            department_id=actor.department_id,
+            roles=("REQUESTER",),
+        )
+        body = await coordinator.ask(
+            user_id=actor.id,
+            question="我提过哪些采购申请？",
+            session_id=None,
+            actor=principal,
+        )
+
+    assert fake.calls >= 2, "应当进入 Agent 循环（至少两次模型回合）"
+    # ① 真的走了 Agent
+    assert body["agent_stop_reason"] == "answered", body
+    # ② **审计字段不能说谎**：Agent 确实调用了模型
+    assert body["used_model"] is True, "Agent 调了模型，used_model 必须是 True"
+    # ③ **不给数据型回答套制度引用规则**（它的回答本来就没有制度引用）
+    assert body["citation_problems"] == [], (
+        f"数据型回答不该被判『没有引用编号』：{body['citation_problems']}"
+    )
+    assert "制度原文" not in body["answer"], "不该给数据型回答贴制度免责声明"
+    # ④ Agent 轨迹要落下来（`_finish` 已经把它并进 support_details）
+    assert body["agent_steps"], "非流式也要给出 Agent 轨迹"
+    assert any(step["kind"] == "tool_call" for step in body["agent_steps"])
+
+
 # ================================================================ 1. 文档入库与切分
 
 
@@ -237,8 +470,10 @@ async def test_upload_splits_and_stores_chunks(world: World) -> None:
             ).all()
         )
     assert len(chunks) == body["chunk_count"]
-    # 每一片都要有向量，且**维度与列定义一致**（不一致时插入就会失败）
-    assert all(len(chunk.embedding) == 256 for chunk in chunks)
+    # 每一片都要有向量，且**维度与列定义一致**（不一致时插入就会失败）。
+    # ⚠️ 用 `VECTOR_DIM` 常量而不是写死数字：写死的话每次调维度都要来找这一行，
+    # 而漏改的表现是"测试报 512 != 256"这种与真实问题无关的失败。
+    assert all(len(chunk.embedding) == VECTOR_DIM for chunk in chunks)
     # 下标对得上原文（排障入口：一眼看出是没检索到还是切碎了）
     async with SessionFactory() as session:
         doc = await session.get(KnowledgeDocRecord, uuid.UUID(body["id"]))
@@ -317,12 +552,21 @@ async def test_upload_accepts_gb18030_text(world: World) -> None:
 # ================================================================ 2. 检索与回答
 
 
-async def test_a_question_in_the_document_is_answered_with_citations(world: World) -> None:
+async def test_a_question_in_the_document_is_answered_with_citations(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """**验收：问文档里有的问题，回答带出处。**
 
-    用文档里**原样出现**的词提问（本地 embedding 靠字面重合，
+    用文档里**原样出现**的词提问（哈希 embedding 靠字面重合，
     换个说法就检索不到了 —— 那是模型的局限，不是链路的错，见 `domain/embedding.py`）。
+
+    ⚠️ **显式把阈值调低**：默认的 `KNOWLEDGE_MIN_SCORE`（0.50）是给**真 embedding**
+    标定的，而这里用的是哈希实现，它对同一段文本只给得出 0.4 左右 ——
+    不改的话这条用例会因为"拒答"而失败，而那是**阈值与 embedding 不匹配**，
+    跟"检索/回答链路对不对"是两件事。测试要验的是后者，所以把前者固定住。
     """
+    monkeypatch.setenv("KNOWLEDGE_MIN_SCORE", "0.15")
+    get_settings.cache_clear()
     await upload(world)
     response = await world.asker.post(
         "/api/v1/chat", json={"question": "采购金额超过十万元应当怎么做？"}
@@ -333,11 +577,44 @@ async def test_a_question_in_the_document_is_answered_with_citations(world: Worl
     assert body["used_model"] is False, "没配密钥时用本地兜底，不算调用远端模型"
     assert "[1]" in body["answer"], f"兜底回答也要标引用编号：{body['answer']}"
     assert body["citation_problems"] == [], "兜底回答的引用应当通过校验"
+    # 第二层（内容支撑性）也要通过：兜底回答是**原文摘录**，
+    # 它引用的事实必然来自被引片段 —— 这是"两层都过"的基线。
+    assert body["support_problems"] == [], f"兜底回答不该有支撑性问题：{body['support_problems']}"
+    assert body["support_rate"] == 1.0, "全部句子都有引用且被支撑 → 1.0"
     assert body["sources"][0]["score"] > 0
     # 编号从 1 开始且连续（Prompt 里的 `[n]` 靠它对应）
     assert [source["number"] for source in body["sources"]] == list(
         range(1, len(body["sources"]) + 1)
     )
+    # ---- 可观测（M11 增强）：延迟**必须真的量到**，token/成本**必须如实为空** ----
+    # ① 检索确实发生过，所以它必须有耗时；而且不该是 None（那意味着埋点没生效）
+    assert isinstance(body["retrieval_ms"], int), f"检索耗时要量到：{body['retrieval_ms']}"
+    assert body["retrieval_ms"] >= 0
+    # ② 模型耗时也要有值（本地兜底走的是"不调用模型"分支，但那段仍然计时）
+    assert isinstance(body["model_ms"], int), f"模型耗时要量到：{body['model_ms']}"
+    # ③ **本地兜底没有 token**：留 None 而不是 0 ——
+    #    0 会被读成"这次调用消耗了 0 token"，而事实是**没有这次调用**。
+    assert body["prompt_tokens"] is None, "本地兜底没有 token，必须是 None 而不是 0"
+    assert body["completion_tokens"] is None
+    # ④ 成本同理：没配价格表 + 没用量 → 未知（None），不是 0
+    assert body["estimated_cost_micros"] is None, "拿不到用量时成本必须是未知（None）"
+
+    # ⑤ **落库**才算数（只回给响应、没进库的话事后统计什么都没有）
+    # 按响应里的 `session_id` 精确定位 —— 不用"查最后一条"，
+    # 那样会抓到别的用例/别的会话的消息（测试之间并不隔离库）。
+    async with SessionFactory() as session:
+        stored = (
+            await session.scalars(
+                select(ChatMessageRecord)
+                .where(ChatMessageRecord.session_id == uuid.UUID(body["session_id"]))
+                .order_by(ChatMessageRecord.seq.desc())
+                .limit(1)
+            )
+        ).one()
+        assert stored.retrieval_ms is not None, "检索耗时必须落库"
+        assert stored.model_ms is not None, "模型耗时必须落库"
+        assert stored.prompt_tokens is None, "没有用量时落库也必须是 NULL"
+        assert stored.estimated_cost_micros is None
 
 
 async def test_a_question_outside_the_document_is_refused(world: World) -> None:
@@ -527,7 +804,6 @@ def _parse_frame(frame: str) -> tuple[str | None, dict]:
 
 # ================================================================ 5. 引用校验（验收项）
 
-
 async def test_a_fabricated_citation_is_caught_and_recorded() -> None:
     """**验收：构造一段引用了不存在编号的回答，校验能报出问题。**
 
@@ -542,6 +818,7 @@ async def test_a_fabricated_citation_is_caught_and_recorded() -> None:
     """
     from app.application.coordinators.knowledge import build_knowledge_coordinator
     from app.infrastructure.chat_models import LocalExtractiveChat
+    from app.infrastructure.embeddings import LocalHashEmbedding
     from app.infrastructure.object_store import LocalObjectStore
 
     class FabricatingChat(LocalExtractiveChat):
@@ -567,6 +844,9 @@ async def test_a_fabricated_citation_is_caught_and_recorded() -> None:
             session,
             object_store=LocalObjectStore("uploads"),
             chat_model=FabricatingChat(),
+            # 这两条用例只验 _finish 之后的事（引用校验与落库），不真的算向量，
+            # 所以用哈希实现即可 —— 不值得为一个假 embedder 引入网络依赖。
+            embedder=LocalHashEmbedding(),
             top_k=5,
             min_score=0.0,  # 阈值放到 0：让"有来源就调模型"这条路一定走通
         )
@@ -618,9 +898,150 @@ async def test_a_fabricated_citation_is_caught_and_recorded() -> None:
         await session.commit()
 
 
+async def test_unsupported_citation_content_is_caught_and_recorded() -> None:
+    """**验收（M11 增强）：引用内容不支撑也要被报出来，而且落库。**
+
+    ============================ 这条用例守的是一个真实盲区 ============================
+    `check_citation_integrity` 只校验"引用的**编号**真不真"。所以下面这种回答
+    会被它**放行**：
+
+        来源 [1]："采购金额超过 10 万元的，应当公开招标"
+        回答    ："根据[1]，采购金额超过 50 万元的应当公开招标"
+
+    编号真、来源也被引用了 —— 但**内容是错的**。这正是 RAG 评测里
+    **Faithfulness（忠实度）** 要量化的事，也是 `check_citation_support` 存在的理由。
+
+    **为什么用假模型构造**：真模型只会偶尔这样，没法稳定复现；
+    而"编造引用内容"是这套校验唯一要防的失败模式，必须能被稳定造出来。
+    """
+    from app.application.coordinators.knowledge import build_knowledge_coordinator
+    from app.domain.grounded_answer import Source as _Source
+    from app.infrastructure.chat_models import LocalExtractiveChat
+    from app.infrastructure.embeddings import LocalHashEmbedding
+    from app.infrastructure.object_store import LocalObjectStore
+
+    class RewritingChat(LocalExtractiveChat):
+        """把来源里的"10 万元"改写成"50 万元"（编号不变，内容变了）。"""
+
+        name = "fake-rewriting"
+
+        async def stream(self, *, system_prompt: str, user_prompt: str, sources):  # type: ignore[override]
+            yield "根据[1]，采购金额超过 50 万元的应当公开招标。"
+
+    async with SessionFactory() as session:
+        coordinator = build_knowledge_coordinator(
+            session,
+            object_store=LocalObjectStore("uploads"),
+            chat_model=RewritingChat(),
+            embedder=LocalHashEmbedding(),
+            top_k=5,
+            min_score=0.0,  # 阈值放 0：让"有来源就调模型"这条路一定走通
+        )
+        actor = (await session.scalars(select(UserRecord).limit(1))).one()
+        chat_session = await coordinator._ensure_session(  # noqa: SLF001
+            user_id=actor.id, session_id=None, question="多少钱要招标？"
+        )
+        prepared = {
+            "session": chat_session,
+            "sources": [
+                _Source(1, "doc", "采购管理办法", 1, 0, "采购金额超过 10 万元的应当公开招标。", 0.9)
+            ],
+            "decision": type(
+                "D", (), {"use_model": True, "reason": "测试", "fallback_answer": ""}
+            )(),
+            "user_prompt": "…",
+        }
+        result = await coordinator._finish(  # noqa: SLF001
+            prepared, answer="根据[1]，采购金额超过 50 万元的应当公开招标。"
+        )
+
+    # ① 第一层不报（编号是真的）—— 这正说明第二层不可缺
+    assert result["citation_problems"] == [], "编号是真的，第一层不该报"
+    # ② 第二层必须报，并指出是哪个数字
+    assert result["support_problems"], "编号真但内容假 → 第二层必须报出来"
+    assert result["support_problems"][0]["kind"] == "CITATION_NUMBER_UNSUPPORTED"
+    assert "500000" in result["support_problems"][0]["detail"]
+    # ③ `support_rate` 要能算出来（唯一一句有引用且不支撑 → 0.0）
+    assert result["support_rate"] == 0.0
+    assert "来源校验未通过" in result["answer"], "回答末尾要追加提示（不阻断，但要说出来）"
+
+    # ④ 落库（这是"积累样本"与评测统计的前提）
+    async with SessionFactory() as session:
+        messages = list(
+            (
+                await session.scalars(
+                    select(ChatMessageRecord)
+                    .where(ChatMessageRecord.session_id == chat_session.id)
+                    .order_by(ChatMessageRecord.seq)
+                )
+            ).all()
+        )
+        assistant = [m for m in messages if m.role == "ASSISTANT"]
+        assert assistant, "助手消息应当落库"
+        assert assistant[-1].support_details, "支撑性问题必须落库"
+        assert assistant[-1].support_rate == 0.0, "支撑率必须落库"
+        await session.execute(
+            delete(ChatMessageRecord).where(ChatMessageRecord.session_id == chat_session.id)
+        )
+        await session.execute(
+            delete(ChatSessionRecord).where(ChatSessionRecord.id == chat_session.id)
+        )
+        await session.commit()
+
+
+async def test_chat_quota_returns_429_when_exhausted(world: World) -> None:
+    """**验收（M11 增强）：token 配额用完时问答返回 429，而不是继续烧钱。**
+
+    ============================ 这条用例守的是什么 ============================
+    AI 接口的滥用成本在 **token** 上，不在请求数上 ——
+    一个人 1 秒问 10 次、每次带 6000 token 上下文，账单按 token 涨，
+    而"请求数"看起来完全正常。所以配额按 token 记，不按请求数记。
+
+    **为什么要在测试里把配额收紧**：默认 20 万 token，一条用例不可能真跑满。
+    收紧之后这条路径才可验证 —— 而"限额逻辑只在生产才会跑到"是最容易写错的一类代码。
+    """
+    from app.infrastructure.token_quota import token_quota
+
+    await upload(world)
+    # 收紧到"问一次就会超"：单次问答的估算量（问题 + 来源 + 回答）远超 1
+    token_quota.configure(max_tokens_per_window=1, min_interval_seconds=0.0)
+
+    first = await world.asker.post("/api/v1/chat", json={"question": "多少钱要招标？"})
+    assert first.status_code == 200, f"第一次应当放行：{first.text}"
+
+    second = await world.asker.post("/api/v1/chat", json={"question": "多少钱要招标？"})
+    assert second.status_code == 429, f"配额用完应当 429：{second.status_code} {second.text}"
+    body = second.json()
+    assert body["error"]["code"] == "CHAT_QUOTA_EXCEEDED"
+    # 错误信息要能让人知道"等多久 / 用超了多少"，否则只知道"失败了"
+    assert "配额" in body["error"]["message"] or "频繁" in body["error"]["message"]
+
+
+async def test_chat_quota_charges_more_than_the_question_length(world: World) -> None:
+    """**记账必须算上来源片段，不能只按问题长度。**
+
+    上下文的主体是**检索到的制度片段**（5 条 × 600 字 ≈ 3000 token），
+    而不是用户那十几个字的问题。只按问题估算的话配额形同虚设：
+    一次提问实际吃掉几千 token，账上只记十几 —— 上限 20 万会被"刷"成几万次。
+    """
+    from app.infrastructure.token_quota import token_quota
+
+    await upload(world)
+    token_quota.reset()
+    token_quota.configure(max_tokens_per_window=10_000_000, min_interval_seconds=0.0)
+
+    question = "多少钱要招标？"
+    response = await world.asker.post("/api/v1/chat", json={"question": question})
+    assert response.status_code == 200, response.text
+
+    used = token_quota.used_tokens(str(world.asker_user_id), now=time.time() + 1)
+    # 只按问题估算是 ~7；算上来源应当显著更大
+    assert used > len(question) * 5, (
+        f"记账要把来源算进去：已记 {used}，而问题本身只有 {len(question)} 字"
+    )
+
+
 # ================================================================ 6. 会话
-
-
 async def test_session_history_is_recorded_and_private(world: World) -> None:
     """会话与消息落库；**别人的会话一律 404**（不告诉它存在）。"""
     await upload(world)

@@ -11,7 +11,8 @@
 构造函数变长，并没有换来实际的可替换性。
 """
 
-from collections.abc import AsyncIterator, Collection, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -261,6 +262,72 @@ class ObjectStorePort(Protocol):
     def delete(self, key: str) -> bool: ...
 
 
+@dataclass(frozen=True)
+class ModelUsage:
+    """一次模型调用的用量（token 数与自报的模型名）。
+
+    ============================ 三个字段都可能为 `None`，这是刻意的 ============================
+    流式接口**默认不返回 token 用量** —— OpenAI 协议要显式传
+    `stream_options: {"include_usage": true}`，而且不是所有网关 / 本地推理服务都支持。
+    拿不到时**留 `None`，不要用字符数估算**：
+    估算值一旦混进"真实用量"里，"这个月花了多少"就成了一笔算不清的账。
+    **宁可空着，也不要一个看起来像真的假数。**
+
+    为什么单独一个类型而不是三个散参数：将来要加"缓存命中 token"
+    （`prompt_tokens_details.cached_tokens`，OpenAI/Anthropic 都有）时，
+    只改这一处。
+    """
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    #: 模型自报的名字（可能与请求里的不同，例如带版本后缀）
+    model: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """模型要求调用一次工具。
+
+    字段与 OpenAI 的 `tool_calls` 一一对应，因为那是**事实标准**：
+    `id` 必须在把结果回灌时原样带回（上游用它配对请求与结果）；
+    `arguments` 保持**原始 JSON 字符串**而不是解好的对象 ——
+    解析失败也是一条必须被处理的分支（模型会给出坏 JSON），
+    提前 parse 会把"JSON 坏了"变成调用方的异常，而不是一个可选结果。
+    """
+
+    id: str
+    name: str
+    #: 原始 JSON 字符串（**未解析**）。解析与校验在 `application/tools.py`。
+    arguments: str
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    """一轮对话里的消息。只有 `tool` 角色需要 `tool_call_id`。"""
+
+    role: str
+    content: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+    #: 工具结果消息要带的**工具名**。
+    #:
+    #: ⚠️ **Ollama 要求 `tool` 消息同时带 `tool_name` 与 `tool_call_id`** ——
+    #: 只给 `tool_call_id` 是我的实现里真实存在过的一个 bug
+    #: （实测 3B 模型容错没暴露出来，但换模型/换版本就可能开始报错，
+    #: 而那种失败看起来像"模型不会用工具"）。
+    #: 参考：Ollama 官方 tool calling 文档的 `{"role": "tool", "tool_name": ..., "content": ...}`，
+    #: 以及 microsoft/agent-framework 的修复 PR「send the tool name on tool result messages」。
+    tool_name: str | None = None
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """一次模型回合的结果：说了一句话，和/或要调工具。"""
+
+    text: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
 class ChatModelPort(Protocol):
     """生成回答的模型（M11）。`application` 只认这个协议，不认是哪一家。
 
@@ -269,16 +336,92 @@ class ChatModelPort(Protocol):
     在它**之后**还要做引用校验。所以实现只负责"把 Prompt 送出去、把文本流回来"，
     绝不负责决定"该不该答" —— 那条判断只有一处（`domain/grounded_answer`）。
 
-    流式（`AsyncIterator[str]`）而不是返回整段：界面要逐字显示，
-    而"先攒完再切块"会让首字延迟等于整段生成时间。
+    ============================ 两个方法，用途不同（不是两套实现）============================
+        `stream`      纯文本流：制度问答那条快路径用它（要逐字显示）
+        `stream_turn` 带工具的回合：Agent 循环用它（要拿到结构化 `tool_calls`）
+
+    为什么不合成一个：文本流与工具调用在**协议层面的形状就不同** ——
+    前者是"很多个小片段"，后者是"一个完整对象"。硬合成一个"既可能是文本片段
+    也可能是工具调用"的事件流，会让**每个**消费方都要写一遍分派逻辑，
+    而分派写错的表现是"工具调了但没人执行"（静默）。
+
+    为什么不只留 `stream_turn`：现有问答路径（流式逐字显示）与它的
+    54 条浏览器断言都建立在"纯文本流"上，为了加工具把它全部改写，
+    风险远大于收益。两条路在**协调者**那一层汇合，而不是在模型适配器里。
     """
 
     #: 模型标识（进日志与 `chat_messages`，事后能分辨回答是谁生成的）
     name: str
 
+    #: **这个实现会不会用工具。** 边界层据此决定走不走 Agent 循环。
+    #:
+    #: 为什么要显式声明而不是"试一下看会不会抛"：
+    #: "不支持"与"支持但这次决定不调工具"在行为上完全不同，
+    #: 而它们都会表现为"没有 tool_calls"。用异常去区分的话，
+    #: 那个异常同时也会被网络错误触发 —— 两种情况要给的提示完全不一样。
+    supports_tools: bool
+
     def stream(
-        self, *, system_prompt: str, user_prompt: str, sources: Sequence[Any]
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        sources: Sequence[Any],
+        on_usage: Callable[[ModelUsage], None] | None = None,
     ) -> AsyncIterator[str]: ...
+
+    def stream_turn(
+        self,
+        *,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[dict[str, Any]],
+        on_usage: Callable[[ModelUsage], None] | None = None,
+    ) -> AsyncIterator[TurnResult]:
+        """跑一个回合，返回**一个** `TurnResult`（实现通常 yield 一次）。
+
+        为什么是异步生成器而不是 `async def -> TurnResult`：
+        与 `stream` 保持同一种调用形状（`async for`），
+        这样协调者里两条路可以共用同一套超时与异常处理，
+        不必为"普通协程"与"异步生成器"写两遍。
+        """
+        ...
+
+
+class EmbeddingPort(Protocol):
+    """把文本变成向量（M11 增强）。
+
+    ============================ 为什么它是**异步**的 ============================
+    真 embedding 模型（bge 系）是**网络调用**，所以协议必须是异步的。
+    项目自带的哈希实现是纯函数、瞬间返回，但它也满足这个协议
+    （异步函数里直接 return 即可）—— 这样"换回退路"不需要改调用方一行。
+
+    ============================ `name` 的语义极其重要 ============================
+    它写进 `knowledge_docs.embedding_model`，而检索会**按它过滤**：
+    同一张表里混着两种模型算的向量，余弦距离**没有意义** ——
+    检索结果会静默变差、且极难排查（两个向量空间不可比）。
+    所以 `name` 必须**唯一标识一个向量空间**：
+    换模型、换维度、换归一化方式 → 都要换一个新名字。
+    名字里带上维度（如 `local-hash-512`）是最省事的做法。
+
+    ⚠️ **不做静默降级**：模型不可用时应当抛错（由协调者翻成明确的失败），
+    而不是偷偷用哈希顶上 —— 那会让"检索质量突然变差"变成一个查不出来的问题，
+    而且两种模型的向量混在同一列里，等于**污染**了向量空间。
+    """
+
+    #: 向量空间的标识（进 `knowledge_docs.embedding_model`，检索时按它过滤）
+    name: str
+
+    #: 这个模型输出多少维。**必须与 `knowledge_chunks.embedding` 的列定义一致**
+    #: （见 `domain/embedding.py` 的维度注册表）。
+    dim: int
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """批量算向量（顺序与入参一一对应）。
+
+        批量而不是逐条：入库时一份文档有几十个片段，
+        逐条发 HTTP 会把"上传一份制度"变成几十次往返。
+        """
+        ...
 
 
 class QuotationView(Protocol):
@@ -345,6 +488,17 @@ class PurchaseRepositoryPort(Protocol):
     async def get_request(
         self, request_id: Any, *, scope: RequestScope, actor_id: Any
     ) -> PurchaseRequestView | None: ...
+
+    async def get_request_by_code(
+        self, code: str, *, scope: RequestScope, actor_id: Any
+    ) -> PurchaseRequestView | None:
+        """按**单据编号**取（Agent 工具用；人说的是单号而不是 UUID）。
+
+        协议里必须有它：`mypy` 就是靠这一条发现"用例层调了一个端口没声明的方法"
+        （实测报 `"PurchaseRepositoryPort" has no attribute "get_request_by_code"`）。
+        **没有端口声明的实现方法等于偷偷加宽了接口** —— 换一个实现时才发现。
+        """
+        ...
 
     async def list_requests(
         self,
