@@ -107,6 +107,19 @@ type AgentStep = {
   kind: string;
   detail: string;
   tool: string | null;
+  /** 写工具预检出的**待人工确认的提案**（M12+）。
+   *
+   * 后端的两段式写工具只做到"准备"：模型给出一份 `draft` 与一个
+   * `confirmation_token`，**落库要人点一下**。所以这里必须带着
+   * `draft`（显示要建什么）与令牌（确认时原样回传）——
+   * 只给一句摘要文本的话，用户**找不到确认的地方**，
+   * 而 Agent 会说"请去确认"。
+   */
+  confirmation?: {
+    action: string | null;
+    draft: { title?: string; category_id?: string; reason?: string | null } | null;
+    confirmation_token: string | null;
+  } | null;
 };
 
 /** SSE 帧解出来的事件。`error` 有两种来源：服务端的 `error` 事件，或半个 JSON。 */
@@ -730,6 +743,7 @@ function AgentSteps({ steps, running }: { steps: AgentStep[]; running: boolean }
         // `guard`（护栏触发：超时/轮次用尽）用 warning 色，它需要用户注意。
         const isGuard = step.kind === "guard";
         const pending = step.kind === "tool_call" && isLast && running;
+        const confirmation = step.confirmation;
         return (
           <li
             key={`${step.round}-${index}`}
@@ -740,10 +754,104 @@ function AgentSteps({ steps, running }: { steps: AgentStep[]; running: boolean }
               {pending ? "◐" : "✓"}
             </span>
             <span className={isGuard ? "text-warning" : "text-muted"}>{text}</span>
+            {/* 写工具是两段式：模型只能**准备**，落库必须人点这一下。
+                所以确认入口必须在这里出现 —— 不给它的话，
+                Agent 会说"请去确认"而用户在界面上找不到任何可确认的地方
+                （这正是这条链原先的缺口）。 */}
+            {confirmation?.confirmation_token && confirmation.draft ? (
+              <DraftConfirmCard
+                draft={confirmation.draft}
+                token={confirmation.confirmation_token}
+              />
+            ) : null}
           </li>
         );
       })}
     </ol>
+  );
+}
+
+/** "确认创建"卡片：把 Agent 准备的草稿显示出来，等人点确认。
+ *
+ * ============================ 为什么必须显示"要建什么" ============================
+ * 确认令牌是**可以推算**的（`uuid5(actor+标题+品类+备注)`），所以后端在确认时
+ * 会**逐字重算令牌比对** —— 它确认的是"这一份提案"，不是某个字符串。
+ * 界面上把 `draft` 显示出来，是与那条纪律配对的一半：
+ * 用户看到的必须**就是**他确认的那份内容。
+ *
+ * 确认后只提示结果，**不把草稿塞进会话**：真正建出来的那张单在"我的申请"里，
+ * 而这里再造一份前端状态，就会有两个事实来源。
+ */
+function DraftConfirmCard({
+  draft,
+  token,
+}: {
+  draft: NonNullable<NonNullable<AgentStep["confirmation"]>["draft"]>;
+  token: string;
+}) {
+  const [state, setState] = useState<"idle" | "sending" | "done" | "replayed" | "error">("idle");
+  const [message, setMessage] = useState<string>("");
+
+  async function confirm() {
+    setState("sending");
+    try {
+      const result = await request<{
+        request_id: string;
+        code: string;
+        title: string;
+        status: string;
+        replayed: boolean;
+      }>("/api/v1/chat/confirm-draft", {
+        method: "POST",
+        body: JSON.stringify({
+          confirmation_token: token,
+          // **原样回传**：后端会逐字重算令牌比对，改一个字段就会 404
+          draft,
+        }),
+      });
+      setState(result.replayed ? "replayed" : "done");
+      setMessage(
+        result.replayed
+          ? `这张单已经建过了：${result.code}（重复确认不会建第二张）`
+          : `已创建：${result.code} · ${result.title} · 状态 ${result.status}`,
+      );
+    } catch (error) {
+      setState("error");
+      setMessage(toError(error).message);
+    }
+  }
+
+  return (
+    <div
+      className="mt-1 w-full rounded border border-line bg-surface p-2"
+      data-testid="chat-draft-confirm"
+    >
+      <div className="text-xs text-muted">
+        待确认的草稿（<span className="font-mono">还没有创建</span>）
+      </div>
+      <div className="mt-1 text-sm">
+        <div>标题：{draft.title ?? "（未提供）"}</div>
+        {draft.reason ? <div className="text-muted">说明：{draft.reason}</div> : null}
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <Button
+          size="sm"
+          data-testid="chat-draft-confirm-button"
+          disabled={state === "sending" || state === "done" || state === "replayed"}
+          onClick={confirm}
+        >
+          {state === "sending" ? "创建中…" : "确认创建"}
+        </Button>
+        {message ? (
+          <span
+            data-testid="chat-draft-confirm-result"
+            className={state === "error" ? "text-xs text-danger" : "text-xs text-muted"}
+          >
+            {message}
+          </span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -1026,6 +1134,32 @@ function readSource(record: Record<string, unknown>): ChatSource {
   };
 }
 
+/** 帧里的 `confirmation`（写工具预检出的待确认提案）→ 有类型的对象。
+ *
+ * **缺字段一律返回 `null`**（而不是补一个空壳）：确认按钮要拿着
+ * `draft` + `confirmation_token` 原样回传，少一个就建不成单 ——
+ * 那种情况下**宁可不显示按钮**，也不要给一个点了必然 404 的按钮。
+ * 这与后端 `verify_confirmation` 的"逐字比对"是同一条纪律的两端。
+ */
+function readConfirmation(value: unknown): AgentStep["confirmation"] {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const draft = record.draft;
+  const token = record.confirmation_token;
+  if (typeof token !== "string" || token.length === 0) return null;
+  if (typeof draft !== "object" || draft === null) return null;
+  const d = draft as Record<string, unknown>;
+  return {
+    action: typeof record.action === "string" ? record.action : null,
+    draft: {
+      title: typeof d.title === "string" ? d.title : undefined,
+      category_id: typeof d.category_id === "string" ? d.category_id : undefined,
+      reason: typeof d.reason === "string" ? d.reason : null,
+    },
+    confirmation_token: token,
+  };
+}
+
 /** 帧 → 有类型的事件。未知事件名返回 `null`（丢弃而不是报错）：
  *  后端将来加事件（心跳、用量…）时前端不该崩，而正文只走 `delta` 一条路，
  *  所以"忽略一个不认识的事件"与"丢掉一段正文"是两件事。
@@ -1054,7 +1188,8 @@ function parseFrame(frame: SseFrame): StreamEvent | null {
   if (frame.event === "delta") return { kind: "delta", text: readText(record.text) };
   if (frame.event === "step") {
     // Agent 执行步骤。字段名与后端 `_answer_with_agent` 推的一致：
-    // `round` / `kind`（tool_call | tool_result | guard）/ `detail` / `tool`。
+    // `round` / `kind`（tool_call | tool_result | guard）/ `detail` / `tool`
+    // / `confirmation`（写工具预检出的待确认提案）。
     return {
       kind: "step",
       step: {
@@ -1062,6 +1197,7 @@ function parseFrame(frame: SseFrame): StreamEvent | null {
         kind: readText(record.kind),
         detail: readText(record.detail),
         tool: typeof record.tool === "string" ? record.tool : null,
+        confirmation: readConfirmation(record.confirmation),
       },
     };
   }

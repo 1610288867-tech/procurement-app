@@ -1071,6 +1071,10 @@ class KnowledgeCoordinator:
                             "kind": item.kind,
                             "detail": item.detail,
                             "tool": item.call.name if item.call else None,
+                            # 写工具预检出的待确认提案（没有就是 None）。
+                            # 前端靠它渲染"确认创建"按钮 —— 只给摘要文本的话，
+                            # 用户找不到确认入口（而那正是这条链的最后一步）。
+                            "confirmation": item.confirmation,
                         }
                     )
                     # 实时推给前端。`tool_call` 与 `tool_result` 分开是两个有用的信号：
@@ -1247,6 +1251,9 @@ class KnowledgeCoordinator:
                             "kind": item.kind,
                             "detail": item.detail,
                             "tool": item.call.name if item.call else None,
+                            # 与流式那条路同一个字段（见 `_answer_with_agent`）：
+                            # 两条路的 `step` 形状必须一致，否则前端要写两套解析。
+                            "confirmation": item.confirmation,
                         }
                     )
                     continue

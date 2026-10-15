@@ -87,6 +87,17 @@ class AgentStep:
     detail: str
     #: 工具调用的原始信息（只在 kind == "tool_call" 时有意义）
     call: ToolCall | None = None
+    #: **待人工确认的提案**（M12+ 起用于写工具的第一段）。
+    #: 只在写工具预检成功时非空，形如：
+    #:     {"action": "create_purchase_draft", "draft": {...}, "confirmation_token": "..."}
+    #:
+    #: ============================ 为什么必须给前端 ============================
+    #: 写工具是**两段式**：模型只能准备，落库要人点一下。
+    #: 而"点一下"需要一个界面 —— 界面需要 `draft`（显示要建什么）
+    #: 与 `confirmation_token`（确认时原样回传）。
+    #: 只给一句摘要文本（"待确认：建草稿「X」"）的话，用户**找不到确认的地方**，
+    #: Agent 就会说"请去确认"而系统里没有任何可确认的入口（实测就是这个表现）。
+    confirmation: dict[str, Any] | None = None
 
 
 @dataclass
@@ -294,6 +305,17 @@ async def run_agent(
                 round_no,
                 "tool_result",
                 outcome.summary or ("成功" if outcome.ok else "失败"),
+                # 写工具预检成功时把**待确认的提案**带上：前端靠它渲染确认按钮，
+                # 而"点了按钮要回传什么"就是这一份 `draft` 与令牌。
+                confirmation=(
+                    {
+                        "action": outcome.payload.get("action"),
+                        "draft": outcome.payload.get("draft"),
+                        "confirmation_token": outcome.payload.get("confirmation_token"),
+                    }
+                    if outcome.payload.get("status") == "PENDING_CONFIRMATION"
+                    else None
+                ),
             )
             trace.append(record(result_step))
             # **落盘必须在下一步之前** —— 这里就是"断点"本身。
