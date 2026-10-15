@@ -194,10 +194,11 @@ docker compose stop        # 停止但保留数据
 
 ## 已知限制
 
-完整清单（含真债与保护措施）在 [RISKS.md](RISKS.md)。最需要知道的三条：
+完整清单（含真债与保护措施）在 [RISKS.md](RISKS.md)。最需要知道的四条：
 
 | 限制 | 说明 |
 | --- | --- |
+| **没有备份、没有恢复演练** | 数据库是单个容器、数据靠 bind mount 落在 `D:\develop\procurement\data\postgres`。**没有 `pg_dump` 脚本、没有 WAL 归档 / 时间点恢复（PITR）、没有恢复演练记录** —— 误删只能靠文件系统层面找回。这是当前**最大的容灾缺口**（见 [RISKS.md](RISKS.md) 第一节） |
 | Docker Desktop **刻意**未设开机自启 | 每次开工要手动启动引擎（`dev-up.ps1` 一条命令搞定） |
 | `docker-compose.yml` 依赖目录布局 | `include:` 用相对路径，要求代码仓库与基础设施目录**同级**；否则需改一行 |
 | M12 桌面壳与移动端暂不做 | 加分项，不影响主干学习目标 |
