@@ -20,6 +20,15 @@ htmlcov/
 # 它只放临时产物（合并件、探针输出），**不进版本库**。
 backend/.tmp/
 
+# 探针/评测脚本的输出转储（排查时临时写，不是交付物）
+backend/probe_*.txt
+backend/probe*.txt
+backend/gate*.txt
+backend/merge_run.txt
+backend/merge_diag.txt
+backend/gguf_diag.txt
+
+
 # ---- 附件目录（M7 起用）----
 backend/uploads/
 
